@@ -3,19 +3,18 @@ import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 
 export default function MenuBar({
-  onNewProject, onImportMidi, onExportMidi, onSaveProject, onLoadProject,
+  onNewProject, onImportMidi, onEmbedMidi, onExportMidi, onSaveProject, onLoadProject,
   onOpenMidiInfo, onUndo, onRedo, onQuantize, onClearTrack,
   onOpenSettings, onToggleMode, onFullscreen, mode, onExitToHome,
   lang = 'zh',
   homeMode = false,
   analyserNodeRef = null,
-  isPlaying = false,
   editMode = 'pointer',
   onEditModeChange = null,
   quantizeValue = '1/4',
   onQuantizeValueChange = null,
   onOpenAbout = null,
-  performanceWarning = false,
+  performanceInfo = { level: 'low', mem: 0 },
 }) {
   const [activeMenu, setActiveMenu] = useState(null);
   const menuRef = useRef(null);
@@ -151,32 +150,43 @@ export default function MenuBar({
         <span style={{ fontWeight: 300, color: '#ffffff', fontSize: '0.85rem' }}>Arvgrid</span>
       </div>
 
-      {/* 性能警告 */}
-      {performanceWarning && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-          padding: '2px 8px',
-          background: '#4a3a10',
-          borderRadius: 4,
-          fontSize: '0.7rem',
-          color: '#e0c040',
-          marginLeft: 8
-        }}>
-          <span style={{ fontSize: '0.9rem' }}>⚠</span>
-          <span>{lang === 'zh' ? '性能警告' : 'Performance'}</span>
-        </div>
-      )}
+      {/* 性能指示器 */}
+      {performanceInfo.level !== 'low' && (() => {
+        const dotColor = performanceInfo.level === 'critical' ? '#e04040' : performanceInfo.level === 'warn' ? '#e0c040' : '#40c040';
+        return (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '2px 8px',
+            borderRadius: 4,
+            fontSize: '0.7rem',
+            marginLeft: 8,
+            background: 'var(--bg)',
+            color: 'var(--text-muted)',
+          }}>
+            <span style={{
+              display: 'inline-block',
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: dotColor,
+              flexShrink: 0,
+            }} />
+            <span>MEM {performanceInfo.mem != null ? Math.round(performanceInfo.mem) : '--'}MB</span>
+          </div>
+        );
+      })()}
 
       {/* 文件菜单 */}
       <div className={`menu-item ${activeMenu === 'file' ? 'active' : ''}`} onClick={() => handleMenuClick('file')}>
         {t.file}
         {activeMenu === 'file' && <div className="menu-dropdown">
-          <a onClick={() => handleItemClick(onNewProject)}><Icons.Plus /> {t.newProject}</a>
-          <a onClick={() => handleItemClick(onImportMidi)}><Icons.Folder /> {t.importMidi}</a>
-          <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onExportMidi, homeMode)}><Icons.Save /> {t.exportMidi}</a>
-          <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onSaveProject, homeMode)}><Icons.Save /> {t.saveProject}</a>
+          <a onClick={() => handleItemClick(onNewProject)}><Icons.Plus /> {t.newProject} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+N</span></a>
+          <a onClick={() => handleItemClick(onImportMidi)}><Icons.Folder /> {t.importMidi} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+O</span></a>
+          <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onEmbedMidi, homeMode)}><Icons.Folder /> {lang === 'zh' ? '嵌入MIDI到工程' : 'Embed MIDI into Project'}</a>
+          <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onExportMidi, homeMode)}><Icons.Save /> {t.exportMidi} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+Shift+S</span></a>
+          <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onSaveProject, homeMode)}><Icons.Save /> {t.saveProject} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+S</span></a>
           <a onClick={() => handleItemClick(onLoadProject)}><Icons.Folder /> {t.loadProject}</a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onExitToHome, homeMode)}><Icons.Home /> {t.backToHome}</a>
         </div>}
@@ -186,8 +196,8 @@ export default function MenuBar({
       <div className={`menu-item ${activeMenu === 'edit' ? 'active' : ''}`} onClick={() => !homeMode && handleMenuClick('edit')} style={homeMode ? { opacity: 0.4, pointerEvents: 'none' } : {}}>
         {t.edit}
         {activeMenu === 'edit' && <div className="menu-dropdown">
-          <a onClick={() => handleItemClick(onUndo)}><Icons.Undo /> {t.undo}</a>
-          <a onClick={() => handleItemClick(onRedo)}><Icons.Redo /> {t.redo}</a>
+          <a onClick={() => handleItemClick(onUndo)}><Icons.Undo /> {t.undo} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+Z</span></a>
+          <a onClick={() => handleItemClick(onRedo)}><Icons.Redo /> {t.redo} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+Shift+Z</span></a>
           <a onClick={() => handleItemClick(onQuantize)}>{t.quantizeTrack}</a>
           <a onClick={() => handleItemClick(onClearTrack)}><Icons.Trash /> {t.clearTrack}</a>
           <a onClick={() => handleItemClick(onOpenMidiInfo)}>{t.midiInfo}</a>

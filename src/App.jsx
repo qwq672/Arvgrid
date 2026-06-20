@@ -59,6 +59,16 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges, lang]);
 
+  // 浏览器标题
+  useEffect(() => {
+    const hasContent = project.tracks.some(t => t.notes && t.notes.length > 0);
+    if (hasContent) {
+      document.title = (project.meta.title || 'Untitled') + ' - Arvgrid';
+    } else {
+      document.title = 'Arvgrid';
+    }
+  }, [project.meta.title, project.tracks]);
+
   useEffect(() => {
     const autosaveData = loadAutosave();
     // 只有当自动保存的数据有实际内容时才提示恢复
@@ -102,6 +112,16 @@ export default function App() {
 
   const handleImportMidi = async (file) => {
     try {
+      // 如果当前工程有轨道内容，先确认
+      const hasContent = project.tracks.some(t => t.notes && t.notes.length > 0);
+      if (hasContent) {
+        if (!confirm(lang === 'zh' ? 'MIDI将被导入到新工程\n是否保存当前工程？' : 'MIDI will be imported into a new project.\nSave current project?')) {
+          // 不保存，直接继续
+        } else {
+          project.exportProject();
+        }
+        setHasUnsavedChanges(false);
+      }
       const arrayBuffer = await file.arrayBuffer();
       const midiData = await parseMidiFile(arrayBuffer);
       project.importMidiData(midiData);
@@ -110,6 +130,24 @@ export default function App() {
     } catch (err) {
       alert(t.importFailed + err.message);
     }
+  };
+
+  const handleEmbedMidi = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.mid,.midi';
+    input.onchange = async (e) => {
+      if (!e.target.files[0]) return;
+      try {
+        const arrayBuffer = await e.target.files[0].arrayBuffer();
+        const midiData = await parseMidiFile(arrayBuffer);
+        project.mergeMidiData(midiData);
+        setHasUnsavedChanges(true);
+      } catch (err) {
+        alert(t.importFailed + err.message);
+      }
+    };
+    input.click();
   };
 
   const handleImportProject = (jsonData) => {
@@ -244,6 +282,7 @@ export default function App() {
         onSaveProject={handleSaveProject}
         onLoadProject={handleLoadProjectFile}
         onNewProject={handleNewProject}
+        onEmbedMidi={handleEmbedMidi}
         onToggleMode={() => setMode(mode === 'desktop' ? 'touch' : 'desktop')}
         onFullscreen={toggleFullscreen}
         mode={mode}

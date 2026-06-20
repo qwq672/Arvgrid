@@ -4,7 +4,7 @@ import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
 
 // 前瞻调度器默认参数
-const MAX_POLYPHONY = 24; // 降低复音数上限，减少 CPU 占用
+const MAX_POLYPHONY = 20; // 降低复音数上限，减少 CPU 占用
 
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
 // 更大的 lookahead 和更短的 interval 可以减少卡顿
@@ -29,7 +29,7 @@ export function useAudioEngine() {
   const sf2BuffersRef = useRef({});
   const sf2PresetMapRef = useRef(new Map()); // 缓存 program -> preset 映射
   const [soundSource, setSoundSource] = useState('default');
-  const [reverbSend, setReverbSend] = useState(0.15);
+  const [reverbSend, setReverbSend] = useState(0.08);
   const [delaySend, setDelaySend] = useState(0.1);
   const [delayTime, setDelayTime] = useState(0.3);
   const [delayFeedback, setDelayFeedback] = useState(0.2);
@@ -62,8 +62,9 @@ export function useAudioEngine() {
   const nextMetronomeIndexRef = useRef(0);
   const activeNodeGroupsRef = useRef([]);
   const totalDurationRef = useRef(0);
-  const [performanceWarning, setPerformanceWarning] = useState(false);
-  const schedulerLagCountRef = useRef(0); // 调度器延迟计数
+  const [performanceInfo, setPerformanceInfo] = useState({ level: 'low', mem: 0 });
+  const schedulerLagCountRef = useRef(0);
+  const lastPerfUpdateRef = useRef(0); // 节流性能更新
 
   useEffect(() => { soundSourceRef.current = soundSource; }, [soundSource]);
   useEffect(() => { metronomeOnRef.current = metronomeOn; }, [metronomeOn]);
@@ -188,7 +189,7 @@ export function useAudioEngine() {
     const ctx = audioCtxRef.current;
     if (!ctx) return null;
 
-    const preset = getOscillatorPreset(program);
+    const preset = getOscillatorPreset(program) || getOscillatorPreset(0);
     const midi = noteToMidi(pitch);
     const freq = 440 * Math.pow(2, (midi - 69) / 12);
     const vol = (velocity / 127) * 0.2;
@@ -410,9 +411,17 @@ export function useAudioEngine() {
     // 使用预建的 sampleIndex 数组进行 O(1) 查找
     let bestSample = preset.sampleIndex[midi];
     
-    // 如果索引中没有，回退到第一个样本
+    // 如果索引中没有，搜索附近音符（最多偏移 5 个半音）
     if (!bestSample) {
-      bestSample = preset.sampleIndex[60]; // 默认使用中央 C
+      for (let offset = 1; offset <= 5; offset++) {
+        bestSample = preset.sampleIndex[midi + offset] || preset.sampleIndex[midi - offset];
+        if (bestSample) break;
+      }
+    }
+    
+    // 仍未找到则回退到中央 C
+    if (!bestSample) {
+      bestSample = preset.sampleIndex[60];
     }
 
     if (!bestSample) {
@@ -452,9 +461,10 @@ export function useAudioEngine() {
     source.playbackRate.value = playbackRate;
 
     const gain = ctx.createGain();
-    // 增加包络时间防止爆音：20ms attack, 80ms release
+    // 增加包络时间防止爆音：20ms attack, 2ms crossfade 防止爆音, 80ms release
     gain.gain.setValueAtTime(0.0001, whenSec);
     gain.gain.setTargetAtTime(vol, whenSec, 0.020);
+    gain.gain.setValueAtTime(vol, whenSec + duration - 0.002);
     gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.080);
 
     source.connect(gain);
@@ -535,22 +545,27 @@ export function useAudioEngine() {
     const src = soundSourceRef.current;
 
     // 性能检测：检查调度器是否延迟
-    const schedulerTime = performance.now();
-    const expectedTime = startTimeRef.current + (nextEventIndexRef.current > 0 ? eventsRef.current[nextEventIndexRef.current - 1]?.time || 0 : 0);
-    const audioTime = now - startTimeRef.current;
-    if (audioTime > 0 && nextEventIndexRef.current > 0) {
-      const lag = audioTime - expectedTime;
-      if (lag > 0.1) { // 延迟超过 100ms
-        schedulerLagCountRef.current++;
-        if (schedulerLagCountRef.current > 3) {
-          setPerformanceWarning(true);
-        }
-      } else {
-        schedulerLagCountRef.current = Math.max(0, schedulerLagCountRef.current - 1);
-        if (schedulerLagCountRef.current === 0) {
-          setPerformanceWarning(false);
-        }
+    let schedulerLag = 0;
+    if (nextEventIndexRef.current > 0 && nextEventIndexRef.current <= events.length) {
+      const nextEvent = events[nextEventIndexRef.current];
+      const nextEventScheduled = startTimeRef.current + (nextEvent ? nextEvent.time : 0);
+      schedulerLag = Math.max(0, now - nextEventScheduled);
+    }
+    
+    // 节流更新性能信息（每 500ms 最多更新一次）
+    const elapsedSinceLastUpdate = now - lastPerfUpdateRef.current;
+    if (elapsedSinceLastUpdate > 0.5) {
+      lastPerfUpdateRef.current = now;
+      const mem = performance.memory?.usedJSHeapSize || 0;
+      let level = 'low';
+      if (schedulerLag > 0.15) {
+        level = 'critical';
+      } else if (schedulerLag > 0.05) {
+        level = 'warn';
+      } else if (schedulerLag > 0.001) {
+        level = 'normal';
       }
+      setPerformanceInfo({ level, mem });
     }
 
     // 清理已完成的节点组
@@ -664,7 +679,7 @@ export function useAudioEngine() {
     nextMetronomeIndexRef.current = 0;
     pauseTimeRef.current = 0;
     schedulerLagCountRef.current = 0;
-    setPerformanceWarning(false);
+    setPerformanceInfo({ level: 'low', mem: 0 });
 
     setIsPlaying(false);
     setIsPaused(false);
@@ -678,7 +693,14 @@ export function useAudioEngine() {
 
     await initAudio();
     const ctx = audioCtxRef.current;
-    if (ctx.state === 'suspended') await ctx.resume();
+    if (ctx && ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch (e) {
+        console.warn('AudioContext resume failed:', e);
+      }
+    }
+    if (!ctx) return;
 
     bpmRef.current = bpm;
     let events = [];
@@ -881,7 +903,7 @@ export function useAudioEngine() {
     setBufferSize,
     startTimeRef,
     analyserNodeRef,
-    performanceWarning,
+    performanceInfo,
   };
 }
 

@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 
 const TRACK_COLORS = ['#339af0','#ff6b6b','#ff922b','#fcc419','#51cf66','#20c997','#845ef7','#e64980','#adb5bd','#ff8787','#d8f5a2','#748ffc'];
+
+const GROUP_NAMES = ['A', 'B', 'C', 'D'];
+const GROUP_TINTS = { A: 'rgba(51,154,240,0.08)', B: 'rgba(255,107,107,0.08)', C: 'rgba(81,207,102,0.08)', D: 'rgba(250,176,5,0.08)' };
 
 const GM_INSTRUMENTS = [
   { id: 0, zh: "大钢琴", en: "Acoustic Grand Piano" },
@@ -139,6 +142,7 @@ export default function TrackPanel({
   tracks, currentTrackId, onSelectTrack, onAddTrack, onDeleteTrack,
   onVolumeChange, onPanChange, onMuteToggle, onProgramChange,
   onColorChange, onCommentChange,
+  onTrackReverbChange, onGroupChange,
   playNote, lang = 'zh',
 }) {
   const [instPanel, setInstPanel] = useState(null);
@@ -146,6 +150,7 @@ export default function TrackPanel({
   const [previewId, setPreviewId] = useState(null);
   const [ctxMenu, setCtxMenu] = useState(null);
   const [commentEdit, setCommentEdit] = useState(null);
+  const clipboard = useRef(null);
   const t = useTranslation(lang);
 
   const filtered = instPanel ? GM_INSTRUMENTS.filter(i => {
@@ -177,6 +182,7 @@ export default function TrackPanel({
         {tracks.map(track => {
           const isSel = track.id === currentTrackId;
           const color = track.color || '#888';
+          const groupTint = track.group ? GROUP_TINTS[track.group] : undefined;
           return (
             <div key={track.id} onContextMenu={(e) => {
               e.preventDefault();
@@ -184,7 +190,7 @@ export default function TrackPanel({
               setCtxMenu({ id: track.id, x: e.clientX, y: e.clientY });
             }}>
               <div onClick={() => onSelectTrack(track.id)} style={{
-                background: isSel ? 'var(--track-hover)' : 'var(--track-bg)',
+                background: groupTint || (isSel ? 'var(--track-hover)' : 'var(--track-bg)'),
                 padding: 6, borderRadius: 6,
                 borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: isSel ? 'var(--text-muted)' : 'var(--border)',
                 borderRightWidth: 1, borderRightStyle: 'solid', borderRightColor: isSel ? 'var(--text-muted)' : 'var(--border)',
@@ -193,7 +199,17 @@ export default function TrackPanel({
               }}>
                 {/* 名称行 */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
-                  <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>{track.name || `Track ${track.id}`}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    {track.group && (
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        width: 16, height: 16, borderRadius: 3,
+                        background: GROUP_TINTS[track.group], border: '1px solid var(--border)',
+                        fontSize: '0.6rem', fontWeight: 700, color: 'var(--text-muted)',
+                      }}>{track.group}</span>
+                    )}
+                    <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>{track.name || `Track ${track.id}`}</span>
+                  </div>
                   <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>P{track.program}</span>
                 </div>
                 {/* 控制行 */}
@@ -206,6 +222,8 @@ export default function TrackPanel({
                   <button onClick={e => { e.stopPropagation(); setInstPanel(track.id); setInstSearch(''); }} style={{ padding: '2px 4px', background: 'none' }} title={t.instrument}>
                     <Icons.Note />
                   </button>
+                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', width: 28, textAlign: 'center' }}>R</span>
+                  <input type="range" min="0" max="100" value={track.reverb || 0} onChange={e => { e.stopPropagation(); onTrackReverbChange && onTrackReverbChange(track.id, parseInt(e.target.value)); }} style={{ width: 30 }} />
                   {track.comment && <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginLeft: 'auto', maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.comment}</span>}
                 </div>
               </div>
@@ -228,6 +246,34 @@ export default function TrackPanel({
             <button onClick={() => { setCommentEdit(ctxMenu.id); setCtxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>
               {lang === 'zh' ? '更改注释' : 'Edit Comment'}
             </button>
+            <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
+            <button onClick={() => { const t = tracks.find(t => t.id === ctxMenu.id); if (t) clipboard.current = { track: { ...t, notes: Array.isArray(t.notes) ? t.notes.map(n => ({ ...n })) : [] }, cut: false }; setCtxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>
+              {lang === 'zh' ? '复制轨道' : 'Copy Track'}
+            </button>
+            <button onClick={() => { const t = tracks.find(t => t.id === ctxMenu.id); if (t) clipboard.current = { track: { ...t, notes: Array.isArray(t.notes) ? t.notes.map(n => ({ ...n })) : [] }, cut: true }; onDeleteTrack(ctxMenu.id); setCtxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>
+              {lang === 'zh' ? '剪切轨道' : 'Cut Track'}
+            </button>
+            {clipboard.current && (
+              <button onClick={() => { if (clipboard.current) { const t = clipboard.current.track; onAddTrack(); if (clipboard.current.cut) clipboard.current = null; } setCtxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>
+                {lang === 'zh' ? '粘贴轨道' : 'Paste Track'}
+              </button>
+            )}
+            <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', padding: '4px 8px' }}>{lang === 'zh' ? '添加到组' : 'Add to Group'}</div>
+            <div style={{ display: 'flex', gap: 3, padding: '0 8px 4px' }}>
+              {GROUP_NAMES.map(g => (
+                <button key={g} onClick={() => { onGroupChange && onGroupChange(ctxMenu.id, g); setCtxMenu(null); }} style={{
+                  padding: '2px 8px', fontSize: '0.7rem', borderRadius: 3, cursor: 'pointer',
+                  background: tracks.find(t => t.id === ctxMenu.id)?.group === g ? 'var(--text-muted)' : 'var(--track-bg)',
+                  border: '1px solid var(--border)', color: 'var(--text)',
+                }}>{g}</button>
+              ))}
+              <button onClick={() => { onGroupChange && onGroupChange(ctxMenu.id, ''); setCtxMenu(null); }} style={{
+                padding: '2px 6px', fontSize: '0.65rem', borderRadius: 3, cursor: 'pointer',
+                background: 'var(--track-bg)', border: '1px solid var(--border)', color: 'var(--text)',
+              }}>{lang === 'zh' ? '无' : 'None'}</button>
+            </div>
+            <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
             <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', padding: '4px 8px' }}>{lang === 'zh' ? '颜色' : 'Color'}</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, padding: '0 8px 4px' }}>
               {TRACK_COLORS.map(c => (

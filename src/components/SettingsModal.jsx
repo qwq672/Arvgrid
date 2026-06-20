@@ -58,12 +58,11 @@ export default function SettingsPanel({
         {/* 搜索 */}
         <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ position: 'relative' }}>
-            <Icons.Search />
             <input type="text" value={search} onChange={e => setSearch(e.target.value)}
               placeholder={lang === 'zh' ? '搜索设置...' : 'Search settings...'}
-              style={{ width: '100%', padding: '5px 8px 5px 24px', fontSize: '0.75rem', border: 'none', background: 'var(--bg)', borderRadius: 5 }}
+              style={{ width: '100%', padding: '5px 8px 5px 28px', fontSize: '0.75rem', border: 'none', background: 'var(--bg)', borderRadius: 5, position: 'relative', zIndex: 1 }}
             />
-            <span style={{ position: 'absolute', left: 6, top: 6, opacity: 0.4 }}><Icons.Search /></span>
+            <span style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', opacity: 0.4, pointerEvents: 'none', display: 'flex', alignItems: 'center' }}><Icons.Search /></span>
           </div>
         </div>
 
@@ -139,13 +138,15 @@ export default function SettingsPanel({
             </div>
           )}
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>{lang === 'zh' ? '维护' : 'Maintenance'}</label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <button onClick={onClearCache} style={{ width: '100%' }}>{t.clearCache}</button>
-              <button onClick={onResetSettings} className="danger" style={{ width: '100%' }}>{t.resetSettings}</button>
+          {matchSearch(lang === 'zh' ? '维护' : 'Maintenance') && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>{lang === 'zh' ? '维护' : 'Maintenance'}</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button onClick={onClearCache} style={{ width: '100%' }}>{t.clearCache}</button>
+                <button onClick={onResetSettings} className="danger" style={{ width: '100%' }}>{t.resetSettings}</button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

@@ -56,7 +56,7 @@ export function clearAllRecentProjects() {
 
 export function useProject() {
   const [tracks, setTracks] = useState([
-    { id: generateId(), name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false }
+    { id: generateId(), name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0 }
   ]);
   const [currentTrackId, setCurrentTrackId] = useState(tracks[0].id);
   const [bpm, setBpm] = useState(120);
@@ -95,7 +95,7 @@ export function useProject() {
   const addTrack = useCallback(() => {
     pushUndo();
     const newId = generateId();
-    setTracks(prev => [...prev, { id: newId, name: `Track ${prev.length+1}`, program: 0, notes: [], volume: 80, pan: 64, mute: false }]);
+    setTracks(prev => [...prev, { id: newId, name: `Track ${prev.length+1}`, program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0 }]);
     setCurrentTrackId(newId);
   }, [pushUndo]);
 
@@ -162,6 +162,35 @@ export function useProject() {
     setTracks(prev => prev.map(t => t.id === trackId ? { ...t, notes: [] } : t));
   }, [pushUndo]);
 
+  const duplicateTrack = useCallback((id) => {
+    pushUndo();
+    const newId = generateId();
+    setTracks(prev => {
+      const idx = prev.findIndex(t => t.id === id);
+      if (idx === -1) return prev;
+      const original = prev[idx];
+      const duplicate = {
+        ...original,
+        id: newId,
+        name: (original.name || `Track ${original.id}`) + ' (copy)',
+        notes: Array.isArray(original.notes) ? original.notes.map(n => ({ ...n })) : [],
+        comment: original.comment || '',
+        group: original.group || '',
+        reverb: original.reverb || 0,
+        color: original.color,
+      };
+      const newTracks = [...prev];
+      newTracks.splice(idx + 1, 0, duplicate);
+      return newTracks;
+    });
+    setCurrentTrackId(newId);
+  }, [pushUndo]);
+
+  const updateTrackGroup = useCallback((id, group) => {
+    pushUndo();
+    setTracks(prev => prev.map(t => t.id === id ? { ...t, group } : t));
+  }, [pushUndo]);
+
   // 导入 MIDI 数据（替换当前工程）
   const importMidiData = useCallback((midiData) => {
     if (!midiData || !midiData.tracks || !Array.isArray(midiData.tracks)) {
@@ -182,6 +211,30 @@ export function useProject() {
     setBpm(midiData.bpm || 120);
     setMeta(prev => ({ ...prev, title: midiData.title || "", copyright: midiData.copyright || "" }));
     setCurrentTrackId(newTracks[0]?.id);
+  }, [pushUndo]);
+
+  // 嵌入 MIDI 数据（追加到当前工程）
+  const mergeMidiData = useCallback((midiData) => {
+    if (!midiData || !midiData.tracks || !Array.isArray(midiData.tracks)) {
+      console.error('Invalid MIDI data:', midiData);
+      return;
+    }
+    pushUndo();
+    const newTracks = midiData.tracks.map((t, idx) => ({
+      id: generateId(),
+      name: t.name || `Track ${idx+1}`,
+      color: t.color,
+      program: t.program || 0,
+      notes: Array.isArray(t.notes) ? t.notes : [],
+      volume: t.volume || 80,
+      pan: t.pan || 64,
+      mute: t.mute || false,
+      comment: t.comment || '',
+    }));
+    setTracks(prev => [...prev, ...newTracks]);
+    if (newTracks.length > 0) {
+      setCurrentTrackId(newTracks[0].id);
+    }
   }, [pushUndo]);
 
   // 导出工程 JSON 文件
@@ -210,7 +263,7 @@ export function useProject() {
   const newProject = useCallback(() => {
     pushUndo();
     const newId = generateId();
-    setTracks([{ id: newId, name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false }]);
+    setTracks([{ id: newId, name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0 }]);
     setBpm(120);
     setMeta({ title: "", artist: "", singer: "", copyright: "" });
     setCurrentTrackId(newId);
@@ -236,7 +289,10 @@ export function useProject() {
     updateNote,
     quantizeTrack,
     clearTrack,
+    duplicateTrack,
+    updateTrackGroup,
     importMidiData,
+    mergeMidiData,
     exportProject,
     importProject,
     newProject,

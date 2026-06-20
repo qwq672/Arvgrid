@@ -171,6 +171,9 @@ input[type="radio"] { accent-color: var(--text-muted); }
   white-space: nowrap;
   text-decoration: none;
   color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .menu-dropdown a:hover { background: var(--accent-hover); }
 .menu-item.active .menu-dropdown { display: flex; }
@@ -219,6 +222,44 @@ input[type="radio"] { accent-color: var(--text-muted); }
 }
 
 /* 触屏模式 */
-.touch-mode button { min-height: 36px; min-width: 36px; }
+body.touch-mode button,
+.touch-mode button { min-height: 44px; min-width: 44px; }
+body.touch-mode input[type="range"],
 .touch-mode input[type="range"] { min-height: 24px; }
-.touch-mode .menu-item { padding: 6px 10px; }
+body.touch-mode .menu-item,
+.touch-mode .menu-item { padding: 8px 12px; min-height: 40px; }
+body.touch-mode select,
+.touch-mode select { min-height: 36px; }
+
+/* 触摸模式滚动区域优化 */
+body.touch-mode .track-panel-scroll,
+.touch-mode .track-panel-scroll,
+body.touch-mode .piano-roll-scroll,
+.touch-mode .piano-roll-scroll {
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 触摸模式交互元素间距 */
+body.touch-mode .menu-bar,
+.touch-mode .menu-bar { gap: 4px; padding: 0 8px; }
+body.touch-mode .edit-toolbar button,
+.touch-mode .edit-toolbar button { padding: 4px 10px; min-height: 40px; }
+
+/* 钢琴卷帘：更大的音符点击区域 */
+body.touch-mode .piano-roll-note,
+.touch-mode .piano-roll-note { min-height: 20px; }
+
+/* Transport：更大的按钮 */
+body.touch-mode .transport button,
+.touch-mode .transport button { min-height: 44px; min-width: 44px; padding: 8px 14px; }
+
+/* 触摸模式下的轨道面板折叠 */
+.touch-mode .track-panel-collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden;
+  padding: 0;
+  margin: 0;
+  border: none;
+}
