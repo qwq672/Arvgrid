@@ -5,11 +5,12 @@ import PianoRoll from './PianoRoll';
 import Transport from './Transport';
 import SettingsModal from './SettingsModal';
 import MidiInfoModal from './MidiInfoModal';
+import ExportAudioDialog from './ExportAudioDialog';
 import { Icons } from './Icons';
 
 const Editor = memo(({
   project, audioEngine, autoSaveMode, setAutoSaveMode,
-  onExitToHome, onOpenSettings, onOpenMidiInfo, onExportMidi,
+  onExitToHome, onOpenSettings, onOpenMidiInfo, onExportMidi, onExportAudio,
   onSaveProject, onLoadProject, onNewProject, onEmbedMidi,
   onToggleMode, onFullscreen, mode,
   settingsOpen, setSettingsOpen, midiInfoOpen, setMidiInfoOpen,
@@ -30,6 +31,9 @@ const Editor = memo(({
   const [quantizeValue, setQuantizeValue] = useState('1/4');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [exportAudioOpen, setExportAudioOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(null);
 
   // 缓存 ghostTracks，避免每次渲染都创建新数组
   const ghostTracks = useMemo(() => 
@@ -56,6 +60,15 @@ const Editor = memo(({
   const handleOnQuantize = useCallback(() => quantizeTrack(currentTrackId), [quantizeTrack, currentTrackId]);
   const handleOnClearTrack = useCallback(() => clearTrack(currentTrackId), [clearTrack, currentTrackId]);
   const handleOnOpenAbout = useCallback(() => setAboutOpen(true), []);
+  const handleOnOpenExportAudio = useCallback(() => setExportAudioOpen(true), []);
+  const handleOnExportAudio = useCallback((options) => {
+    onExportAudio(options, (progress) => setExportProgress(progress), () => {
+      setIsExporting(false);
+      setExportProgress(null);
+      setExportAudioOpen(false);
+    });
+    setIsExporting(true);
+  }, [onExportAudio]);
   const handleOnDuplicateTrack = useCallback((id) => duplicateTrack(id), [duplicateTrack]);
   const handleOnGroupChange = useCallback((id, group) => updateTrackGroup(id, group), [updateTrackGroup]);
   const handleOnTrackReverbChange = useCallback((id, rev) => updateTrack(id, { reverb: rev }), [updateTrack]);
@@ -114,6 +127,7 @@ const Editor = memo(({
         onEmbedMidi={onEmbedMidi}
         onImportMidi={handleImportMidi}
         onExportMidi={onExportMidi}
+        onExportAudio={handleOnOpenExportAudio}
         onSaveProject={onSaveProject}
         onLoadProject={onLoadProject}
         onOpenSettings={onOpenSettings}
@@ -239,6 +253,15 @@ const Editor = memo(({
         meta={meta}
         onMetaChange={setMeta}
         lang={lang}
+      />
+
+      <ExportAudioDialog
+        open={exportAudioOpen}
+        onClose={() => { if (!isExporting) { setExportAudioOpen(false); setExportProgress(null); } }}
+        onExport={handleOnExportAudio}
+        lang={lang}
+        isExporting={isExporting}
+        progress={exportProgress}
       />
 
       {/* 关于对话框 */}

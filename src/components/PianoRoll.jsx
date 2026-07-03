@@ -71,6 +71,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const dragStateRef = useRef(dragState);
   const selectedNotesRef = useRef(selectedNotes);
   const marqueeRectRef = useRef(marqueeRect);
+  const lastMoveTimeRef = useRef(0);
 
   // 同步 refs
   useEffect(() => { trackRef.current = track; }, [track]);
@@ -225,10 +226,15 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     }
   }, [draw]);
 
-  // 初始绘制和依赖变化时触发
+  // 初始绘制和依赖变化时触发 - 使用 requestRedraw 批量处理
   useEffect(() => {
-    draw();
-  }, [track, trackColor, ghostTracks, zoomX, zoomY, marqueeRect, selectedNotes, draw]);
+    requestRedraw();
+  }, [track, trackColor, ghostTracks, zoomX, zoomY, marqueeRect, draw]);
+
+  // 选中状态变化时触发重绘
+  useEffect(() => {
+    requestRedraw();
+  }, [selectedNotes]);
 
   const drawPlayhead = useCallback((currentTime) => {
     const canvas = playheadCanvasRef.current;
@@ -386,6 +392,12 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const handlePointerMove = useCallback((e) => {
     const ds = dragStateRef.current;
     if (!ds.active) return;
+    
+    // 节流：限制状态更新频率为 ~30fps，减少 React 重渲染
+    const now = performance.now();
+    if (now - lastMoveTimeRef.current < 33) return;
+    lastMoveTimeRef.current = now;
+    
     e.preventDefault();
     const point = e.touches ? e.touches[0] : e;
     const { x: lx, y: ly } = canvasToLogical(point.clientX, point.clientY);

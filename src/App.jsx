@@ -5,6 +5,7 @@ import { useAutoSave } from './hooks/useAutoSave';
 import HomePage from './components/HomePage';
 import Editor from './components/Editor';
 import { parseMidiFile, generateMidiFile } from './lib/midi';
+import { exportAudio } from './lib/audioExport';
 import { useTranslation } from './lib/i18n';
 
 export default function App() {
@@ -173,6 +174,25 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportAudio = async (options, onProgress, onComplete) => {
+    try {
+      // 获取 SF2 数据（如果已加载）
+      const sf2Data = audioEngine.sf2Loaded ? audioEngine._getSf2Data?.() : null;
+      const blob = await exportAudio(project.tracks, project.bpm, sf2Data, options, onProgress);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const ext = options.format === 'mp3' ? 'mp3' : options.format === 'flac' ? 'flac' : 'wav';
+      const title = project.meta?.title || 'export';
+      a.download = `${title}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert((lang === 'zh' ? '导出失败: ' : 'Export failed: ') + err.message);
+    }
+    onComplete();
+  };
+
   const handleSaveProject = () => {
     project.exportProject();
     setHasUnsavedChanges(false);
@@ -279,6 +299,7 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenMidiInfo={() => setMidiInfoOpen(true)}
         onExportMidi={handleExportMidi}
+        onExportAudio={handleExportAudio}
         onSaveProject={handleSaveProject}
         onLoadProject={handleLoadProjectFile}
         onNewProject={handleNewProject}

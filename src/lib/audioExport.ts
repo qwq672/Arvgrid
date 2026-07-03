@@ -26,7 +26,7 @@ export async function renderAudioBuffer(
   let maxTime = 0;
   tracks.forEach(track => {
     if (track.mute) return;
-    track.notes.forEach(note => {
+    track.notes.forEach((note: { startSec: number; durationSec: number }) => {
       const endTime = note.startSec + note.durationSec;
       if (endTime > maxTime) maxTime = endTime;
     });
@@ -43,7 +43,7 @@ export async function renderAudioBuffer(
   const events: any[] = [];
   tracks.forEach(track => {
     if (track.mute) return;
-    track.notes.forEach(note => {
+    track.notes.forEach((note: { pitch: string; startSec: number; durationSec: number; velocity: number }) => {
       events.push({
         time: note.startSec,
         duration: note.durationSec,
@@ -65,39 +65,69 @@ export async function renderAudioBuffer(
     const velocity = event.velocity;
     const program = event.program;
 
-    // 尝试使用 SF2 样本
+    // 尝试使用 SF2 样本 - 使用 sampleIndex 进行 O(1) 查找
     if (sf2Data && sf2Data.presets) {
       const preset = sf2Data.presets.find((p: any) => p.program === program) || sf2Data.presets[0];
-      if (preset && preset.samples && preset.samples.length > 0) {
+      if (preset && preset.sampleIndex) {
         const midi = noteToMidi(event.pitch);
-        let bestSample = preset.samples[0];
-        let minDist = Infinity;
+        const vol = (velocity / 127) * 0.12;
         
-        for (const sample of preset.samples) {
-          const dist = Math.abs((sample.rootKey || 60) - midi);
-          if (dist < minDist) {
-            minDist = dist;
-            bestSample = sample;
+        // 使用预建的 sampleIndex 数组进行 O(1) 查找
+        let bestSample = preset.sampleIndex[midi];
+        
+        // 如果索引中没有，搜索附近音符（最多偏移 5 个半音）
+        if (!bestSample) {
+          for (let offset = 1; offset <= 5; offset++) {
+            bestSample = preset.sampleIndex[midi + offset] || preset.sampleIndex[midi - offset];
+            if (bestSample) break;
           }
         }
+        
+        // 仍未找到则回退到中央 C
+        if (!bestSample) {
+          bestSample = preset.sampleIndex[60];
+        }
 
-        if (bestSample.buffer) {
-          const source = offlineCtx.createBufferSource();
-          source.buffer = bestSample.buffer;
-          const rootKey = bestSample.rootKey || 60;
-          source.playbackRate.value = Math.pow(2, (midi - rootKey) / 12);
+        if (bestSample) {
+          // 延迟创建 AudioBuffer（按需创建并缓存）
+          if (!bestSample.audioBuffer && bestSample.pcmData) {
+            try {
+              const length = bestSample.pcmData.length;
+              const audioBuffer = offlineCtx.createBuffer(1, length, bestSample.sampleRate);
+              const channelData = audioBuffer.getChannelData(0);
+              for (let i = 0; i < length; i++) {
+                channelData[i] = bestSample.pcmData[i] / 32768;
+              }
+              bestSample.audioBuffer = audioBuffer;
+            } catch (e) {
+              console.warn('Failed to create audio buffer:', e);
+            }
+          }
 
-          const gain = offlineCtx.createGain();
-          const vol = (velocity / 127) * 0.3;
-          gain.gain.setValueAtTime(0.0001, whenSec);
-          gain.gain.setTargetAtTime(vol, whenSec, 0.008);
-          gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.015);
+          if (bestSample.audioBuffer) {
+            const source = offlineCtx.createBufferSource();
+            source.buffer = bestSample.audioBuffer;
+            const rootKey = bestSample.rootKey || 60;
+            
+            // 计算播放速率，包含 pitchCorrection
+            let playbackRate = Math.pow(2, (midi - rootKey) / 12);
+            if (bestSample.pitchCorrection) {
+              playbackRate *= Math.pow(2, bestSample.pitchCorrection / 1200);
+            }
+            source.playbackRate.value = playbackRate;
 
-          source.connect(gain);
-          gain.connect(offlineCtx.destination);
+            const gain = offlineCtx.createGain();
+            gain.gain.setValueAtTime(0.0001, whenSec);
+            gain.gain.setTargetAtTime(vol, whenSec, 0.020);
+            gain.gain.setValueAtTime(vol, whenSec + duration - 0.002);
+            gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.080);
 
-          source.start(whenSec);
-          source.stop(whenSec + duration + 0.1);
+            source.connect(gain);
+            gain.connect(offlineCtx.destination);
+
+            source.start(whenSec);
+            source.stop(whenSec + duration + 0.1);
+          }
         }
       }
     }
@@ -233,7 +263,7 @@ export async function exportToMp3(
     });
   }
 
-  return new Blob(mp3Data, { type: 'audio/mp3' });
+  return new Blob(mp3Data as BlobPart[], { type: 'audio/mp3' });
 }
 
 /**

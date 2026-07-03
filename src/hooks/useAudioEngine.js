@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import Soundfont from 'soundfont-player';
 import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
@@ -841,7 +841,7 @@ export function useAudioEngine() {
     }
   }, []);
 
-  return {
+  return useMemo(() => ({
     playNote,
     startPlayback: (tracks, bpm = 120) => startPlayback(tracks, bpm),
     stopPlayback,
@@ -880,10 +880,9 @@ export function useAudioEngine() {
     loadSF2: async (arrayBuffer) => {
       await initAudio();
       try {
-        // 直接传入 audioContext（虽然不再预创建 AudioBuffer，但保留接口兼容性）
         const sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
         sf2DataRef.current = sf2Data;
-        sf2BuffersRef.current = {}; // 不再预加载 buffer，延迟创建
+        sf2BuffersRef.current = {};
         setSoundSource('sf2');
         console.log(`SF2 loaded: ${sf2Data.presets.length} presets`);
         return { success: true, name: sf2Data.name || 'SF2' };
@@ -893,6 +892,7 @@ export function useAudioEngine() {
       }
     },
     sf2Loaded: !!sf2DataRef.current,
+    _getSf2Data: () => sf2DataRef.current,
     initAudio,
     metronomeOn,
     setMetronomeOn: (val) => {
@@ -904,7 +904,10 @@ export function useAudioEngine() {
     startTimeRef,
     analyserNodeRef,
     performanceInfo,
-  };
+  }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback, 
+      isPlaying, isPaused, currentTime, totalDuration, getPlaybackTime, seekTo,
+      reverbSend, delaySend, delayTime, delayFeedback, soundSource, metronomeOn, 
+      bufferSize, performanceInfo, initAudio, setSoundSource, setBufferSize]);
 }
 
 function noteToMidi(pitch) {

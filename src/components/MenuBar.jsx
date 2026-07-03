@@ -3,7 +3,7 @@ import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 
 export default function MenuBar({
-  onNewProject, onImportMidi, onEmbedMidi, onExportMidi, onSaveProject, onLoadProject,
+  onNewProject, onImportMidi, onEmbedMidi, onExportMidi, onExportAudio, onSaveProject, onLoadProject,
   onOpenMidiInfo, onUndo, onRedo, onQuantize, onClearTrack,
   onOpenSettings, onToggleMode, onFullscreen, mode, onExitToHome,
   lang = 'zh',
@@ -186,6 +186,7 @@ export default function MenuBar({
           <a onClick={() => handleItemClick(onImportMidi)}><Icons.Folder /> {t.importMidi} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+O</span></a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onEmbedMidi, homeMode)}><Icons.Folder /> {lang === 'zh' ? '嵌入MIDI到工程' : 'Embed MIDI into Project'}</a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onExportMidi, homeMode)}><Icons.Save /> {t.exportMidi} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+Shift+S</span></a>
+          <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onExportAudio, homeMode)}><Icons.Save /> {t.exportAudio || (lang === 'zh' ? '导出音频' : 'Export Audio')}</a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onSaveProject, homeMode)}><Icons.Save /> {t.saveProject} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>Ctrl+S</span></a>
           <a onClick={() => handleItemClick(onLoadProject)}><Icons.Folder /> {t.loadProject}</a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onExitToHome, homeMode)}><Icons.Home /> {t.backToHome}</a>
