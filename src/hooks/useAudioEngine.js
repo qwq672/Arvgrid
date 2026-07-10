@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import Soundfont from 'soundfont-player';
 import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
 
@@ -89,7 +88,7 @@ export function useAudioEngine() {
 
     // 示波器分析器节点 - 插入在 compressor 和 destination 之间
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 128; // 降低 FFT 大小，减少 CPU 占用
+    analyser.fftSize = 2048; // 足够的采样点用于平滑波形显示
     analyser.smoothingTimeConstant = 0.8;
     master.connect(compressor);
     compressor.connect(analyser);
@@ -398,7 +397,10 @@ export function useAudioEngine() {
     let preset = sf2PresetMapRef.current.get(program);
     if (!preset) {
       const presets = sf2DataRef.current.presets;
-      preset = presets.find(p => p.program === program) || presets[0];
+      // 优先匹配 bank 0（旋律乐器），避免误选鼓组（bank 128）
+      preset = presets.find(p => p.program === program && p.bank === 0)
+            || presets.find(p => p.program === program)
+            || presets[0];
       if (preset) {
         sf2PresetMapRef.current.set(program, preset);
       }
@@ -410,7 +412,7 @@ export function useAudioEngine() {
 
     // 使用预建的 sampleIndex 数组进行 O(1) 查找
     let bestSample = preset.sampleIndex[midi];
-    
+
     // 如果索引中没有，搜索附近音符（最多偏移 5 个半音）
     if (!bestSample) {
       for (let offset = 1; offset <= 5; offset++) {
@@ -434,13 +436,12 @@ export function useAudioEngine() {
         const length = bestSample.pcmData.length;
         const audioBuffer = ctx.createBuffer(1, length, bestSample.sampleRate);
         const channelData = audioBuffer.getChannelData(0);
-        // 将 Int16 转换为 Float32
+        const pcm = bestSample.pcmData;
         for (let i = 0; i < length; i++) {
-          channelData[i] = bestSample.pcmData[i] / 32768;
+          channelData[i] = pcm[i] / 32768;
         }
         bestSample.audioBuffer = audioBuffer;
       } catch (e) {
-        console.warn('Failed to create audio buffer:', e);
         return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
       }
     }
@@ -533,7 +534,7 @@ export function useAudioEngine() {
     activeNodeGroupsRef.current = [];
   }, []);
 
-  // 前瞻调度器核心 - 使用动态缓冲区参数
+  // 前瞻调度器核心 - 使用自校正 setTimeout
   const runScheduler = useCallback(() => {
     if (!isPlayingRef.current || isPausedRef.current) return;
     const ctx = audioCtxRef.current;
@@ -551,12 +552,12 @@ export function useAudioEngine() {
       const nextEventScheduled = startTimeRef.current + (nextEvent ? nextEvent.time : 0);
       schedulerLag = Math.max(0, now - nextEventScheduled);
     }
-    
+
     // 节流更新性能信息（每 500ms 最多更新一次）
     const elapsedSinceLastUpdate = now - lastPerfUpdateRef.current;
     if (elapsedSinceLastUpdate > 0.5) {
       lastPerfUpdateRef.current = now;
-      const mem = performance.memory?.usedJSHeapSize || 0;
+      const mem = performance.memory?.usedJSHeapSize / 1048576 || 0;
       let level = 'low';
       if (schedulerLag > 0.15) {
         level = 'critical';
@@ -568,14 +569,17 @@ export function useAudioEngine() {
       setPerformanceInfo({ level, mem });
     }
 
-    // 清理已完成的节点组
-    activeNodeGroupsRef.current = activeNodeGroupsRef.current.filter(group => {
-      if (group.stopTime <= now) {
-        disconnectNodeGroup(group);
-        return false;
+    // 清理已完成的节点组 - 原地修改避免 GC
+    const groups = activeNodeGroupsRef.current;
+    let writeIdx = 0;
+    for (let i = 0; i < groups.length; i++) {
+      if (groups[i].stopTime <= now) {
+        disconnectNodeGroup(groups[i]);
+      } else {
+        groups[writeIdx++] = groups[i];
       }
-      return true;
-    });
+    }
+    groups.length = writeIdx;
 
     // 调度即将到达的音符
     while (nextEventIndexRef.current < events.length) {
@@ -585,7 +589,7 @@ export function useAudioEngine() {
       if (whenSec > lookahead) break;
 
       // 复音数限制
-      if (activeNodeGroupsRef.current.length >= MAX_POLYPHONY) break;
+      if (groups.length >= MAX_POLYPHONY) break;
 
       let group = null;
       if (src === 'network' && instrumentRef.current) {
@@ -604,7 +608,7 @@ export function useAudioEngine() {
       }
 
       if (group) {
-        activeNodeGroupsRef.current.push(group);
+        groups.push(group);
       }
 
       nextEventIndexRef.current++;
@@ -624,11 +628,14 @@ export function useAudioEngine() {
         const isDownbeat = nextMetronomeIndexRef.current % 4 === 0;
         const group = scheduleMetronomeClick(beatTime, isDownbeat);
         if (group) {
-          activeNodeGroupsRef.current.push(group);
+          groups.push(group);
         }
         nextMetronomeIndexRef.current++;
       }
     }
+
+    // 自校正 setTimeout：比 setInterval 更精确，不会被浏览器节流
+    schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
   }, []);
 
   // 即时播放一个音符（用于试听）
@@ -666,7 +673,7 @@ export function useAudioEngine() {
       playIntervalRef.current = null;
     }
     if (schedulerTimerRef.current) {
-      clearInterval(schedulerTimerRef.current);
+      clearTimeout(schedulerTimerRef.current);
       schedulerTimerRef.current = null;
     }
     scheduledTimeoutsRef.current.forEach(tid => clearTimeout(tid));
@@ -736,7 +743,7 @@ export function useAudioEngine() {
     setIsPaused(false);
 
     // 启动前瞻调度器
-    schedulerTimerRef.current = setInterval(runScheduler, schedulerMsRef.current);
+    schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
 
     // 不再用 setInterval 更新 currentTime，改由组件用 requestAnimationFrame 读取
     // 只保留一个检查播放结束的定时器
@@ -761,7 +768,7 @@ export function useAudioEngine() {
 
     // 停止调度器
     if (schedulerTimerRef.current) {
-      clearInterval(schedulerTimerRef.current);
+      clearTimeout(schedulerTimerRef.current);
       schedulerTimerRef.current = null;
     }
 
@@ -801,7 +808,7 @@ export function useAudioEngine() {
     nextMetronomeIndexRef.current = Math.floor(pauseTime / beatInterval);
 
     // 重新启动调度器
-    schedulerTimerRef.current = setInterval(runScheduler, schedulerMsRef.current);
+    schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
   }, [runScheduler]);
 
   const seekTo = (time) => {
@@ -883,8 +890,10 @@ export function useAudioEngine() {
         const sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
         sf2DataRef.current = sf2Data;
         sf2BuffersRef.current = {};
+        sf2PresetMapRef.current.clear();
         setSoundSource('sf2');
-        console.log(`SF2 loaded: ${sf2Data.presets.length} presets`);
+        // 预热：为第一个 preset 的中央八度预建 AudioBuffer，减少首次播放卡顿
+        prewarmSF2Buffers(sf2Data, audioCtxRef.current);
         return { success: true, name: sf2Data.name || 'SF2' };
       } catch (err) {
         console.error('SF2 load failed:', err);
@@ -915,4 +924,37 @@ function noteToMidi(pitch) {
   if (!m) return 60;
   const map = { 'C':0,'C#':1,'Db':1,'D':2,'D#':3,'Eb':3,'E':4,'F':5,'F#':6,'Gb':6,'G':7,'G#':8,'Ab':8,'A':9,'A#':10,'Bb':10,'B':11 };
   return (parseInt(m[2])+1)*12 + map[m[1]];
+}
+
+// 预热 SF2 AudioBuffer：为第一个 preset 的中央区域音符预建 buffer
+// 使用分块处理避免阻塞主线程
+function prewarmSF2Buffers(sf2Data, ctx) {
+  if (!sf2Data || !sf2Data.presets || !sf2Data.presets.length || !ctx) return;
+  // 只预热前 4 个 preset 的中央八度 (48-72)
+  const presetsToWarm = sf2Data.presets.slice(0, 4);
+  let midi = 48;
+
+  const warmNext = () => {
+    if (midi > 72) return;
+    for (const preset of presetsToWarm) {
+      const sample = preset.sampleIndex[midi];
+      if (sample && !sample.audioBuffer && sample.pcmData) {
+        try {
+          const length = sample.pcmData.length;
+          const audioBuffer = ctx.createBuffer(1, length, sample.sampleRate);
+          const channelData = audioBuffer.getChannelData(0);
+          for (let i = 0; i < length; i++) {
+            channelData[i] = sample.pcmData[i] / 32768;
+          }
+          sample.audioBuffer = audioBuffer;
+        } catch (e) {}
+      }
+    }
+    midi++;
+    if (midi <= 72) {
+      // 分块：每帧处理一个 MIDI 音符，避免阻塞
+      requestAnimationFrame(warmNext);
+    }
+  };
+  warmNext();
 }

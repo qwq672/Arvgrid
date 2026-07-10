@@ -58,7 +58,9 @@ export default function SettingsPanel({
         {/* 搜索 */}
         <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ position: 'relative' }}>
-            <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+            <input type="text" value={search}
+              onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => e.stopPropagation()}
               placeholder={lang === 'zh' ? '搜索设置...' : 'Search settings...'}
               style={{ width: '100%', padding: '5px 8px 5px 28px', fontSize: '0.75rem', border: 'none', background: 'var(--bg)', borderRadius: 5, position: 'relative', zIndex: 1 }}
             />

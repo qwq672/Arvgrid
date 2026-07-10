@@ -84,13 +84,16 @@ export default function MenuBar({
           ctx.beginPath();
           ctx.strokeStyle = '#4a8a6a';
           ctx.lineWidth = 2;
+          ctx.shadowColor = '#4a8a6a';
+          ctx.shadowBlur = 6;
           ctx.moveTo(0, canvas.height / 2);
           ctx.lineTo(canvas.width, canvas.height / 2);
           ctx.stroke();
+          ctx.shadowBlur = 0;
         }
         return;
       }
-      const bufferLength = analyser.frequencyBinCount;
+      const bufferLength = analyser.fftSize;
       const dataArray = new Uint8Array(bufferLength);
       try { analyser.getByteTimeDomainData(dataArray); } catch (e) { return; }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -117,8 +120,10 @@ export default function MenuBar({
         color = '#4a8a6a'; // 安静绿色
       }
 
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 3;
       ctx.strokeStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
       ctx.beginPath();
       const sliceWidth = canvas.width / bufferLength;
       let x = 0;
@@ -129,6 +134,7 @@ export default function MenuBar({
         x += sliceWidth;
       }
       ctx.stroke();
+      ctx.shadowBlur = 0;
     };
     draw();
     return () => { if (oscRafRef.current) cancelAnimationFrame(oscRafRef.current); if (observer) observer.disconnect(); };
@@ -150,9 +156,10 @@ export default function MenuBar({
         <span style={{ fontWeight: 300, color: '#ffffff', fontSize: '0.85rem' }}>Arvgrid</span>
       </div>
 
-      {/* 性能指示器 */}
-      {performanceInfo.level !== 'low' && (() => {
-        const dotColor = performanceInfo.level === 'critical' ? '#e04040' : performanceInfo.level === 'warn' ? '#e0c040' : '#40c040';
+      {/* 性能指示器 - 始终显示 */}
+      {(() => {
+        const dotColor = performanceInfo.level === 'critical' ? '#e04040' : performanceInfo.level === 'warn' ? '#e0c040' : performanceInfo.level === 'normal' ? '#40b0b0' : '#40c040';
+        const label = performanceInfo.level === 'critical' ? (lang === 'zh' ? '严重' : 'CRIT') : performanceInfo.level === 'warn' ? (lang === 'zh' ? '警告' : 'WARN') : performanceInfo.level === 'normal' ? (lang === 'zh' ? '正常' : 'OK') : (lang === 'zh' ? '空闲' : 'IDLE');
         return (
           <div style={{
             display: 'flex',
@@ -173,7 +180,8 @@ export default function MenuBar({
               background: dotColor,
               flexShrink: 0,
             }} />
-            <span>MEM {performanceInfo.mem != null ? Math.round(performanceInfo.mem) : '--'}MB</span>
+            <span>{label}</span>
+            {performanceInfo.mem != null && <span>{Math.round(performanceInfo.mem)}MB</span>}
           </div>
         );
       })()}
@@ -241,8 +249,8 @@ export default function MenuBar({
       )}
 
       {/* 示波器 */}
-      <div style={{ flex: 1, minWidth: 40, maxWidth: 200, height: '100%', display: 'flex', alignItems: 'center', marginLeft: 'auto', padding: '3px 0' }}>
-        <canvas ref={oscCanvasRef} style={{ width: '100%', height: '100%', borderRadius: 3, background: 'var(--bg)' }} />
+      <div style={{ flex: 1, minWidth: 60, maxWidth: 300, height: '100%', display: 'flex', alignItems: 'center', marginLeft: 'auto', padding: '2px 0' }}>
+        <canvas ref={oscCanvasRef} style={{ width: '100%', height: '100%', borderRadius: 3, background: '#0a0a0e', border: '1px solid var(--border)' }} />
       </div>
     </div>
   );

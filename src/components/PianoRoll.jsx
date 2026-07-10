@@ -44,6 +44,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const containerRef = useRef(null);
   const [zoomX, setZoomX] = useState(80);
   const [zoomY, setZoomY] = useState(20);
+  const pinchStateRef = useRef(null); // 双指缩放状态
   const offsetXRef = useRef(0);
   const offsetYRef = useRef(0);
   const [dragState, setDragState] = useState({ active: false, type: null, startX: 0, startY: 0, notes: [] });
@@ -338,7 +339,6 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
 
   // 使用 refs 的事件处理器 - 避免重新绑定
   const handlePointerDown = useCallback((e) => {
-    e.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const point = e.touches ? e.touches[0] : e;
@@ -347,11 +347,18 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const trk = trackRef.current;
     if (!trk || !trk.notes) return;
 
+    // 触屏 + 指针模式：允许原生滚动，只在点击音符时选中
     if (mode === 'pointer') {
       const note = findNoteAtLogical(lx, ly);
-      setSelectedNotes(note ? [note] : []);
+      if (note) {
+        e.preventDefault();
+        setSelectedNotes(note ? [note] : []);
+      }
       return;
     }
+
+    // 非指针模式才阻止默认行为（防止滚动）
+    e.preventDefault();
 
     if (mode === 'draw') {
       const { sec, pitch } = logicalToSecPitch(lx, ly);
@@ -392,13 +399,15 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const handlePointerMove = useCallback((e) => {
     const ds = dragStateRef.current;
     if (!ds.active) return;
-    
+
+    // 拖拽时始终阻止滚动，即使被节流也要 preventDefault
+    e.preventDefault();
+
     // 节流：限制状态更新频率为 ~30fps，减少 React 重渲染
     const now = performance.now();
     if (now - lastMoveTimeRef.current < 33) return;
     lastMoveTimeRef.current = now;
-    
-    e.preventDefault();
+
     const point = e.touches ? e.touches[0] : e;
     const { x: lx, y: ly } = canvasToLogical(point.clientX, point.clientY);
     const trk = trackRef.current;
@@ -516,6 +525,9 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   // Ctrl shortcuts
   useEffect(() => {
     const h = (e) => {
+      const tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
       if (!e.ctrlKey && !e.metaKey) {
         if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
         return;
@@ -551,6 +563,46 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     };
   }, [handlePointerDown, handlePointerMove, handlePointerUp, handleContextMenu]);
 
+  // 双指缩放（pinch zoom）- 在指针模式下生效
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleTouchStartPinch = (e) => {
+      if (e.touches.length !== 2) return;
+      if (editModeRef.current !== 'pointer') return;
+      const t1 = e.touches[0], t2 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      pinchStateRef.current = { startDist: dist, startZoomX: zoomXRef.current, startZoomY: zoomYRef.current };
+      e.preventDefault();
+    };
+
+    const handleTouchMovePinch = (e) => {
+      if (!pinchStateRef.current || e.touches.length !== 2) return;
+      e.preventDefault();
+      const t1 = e.touches[0], t2 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      const scale = dist / pinchStateRef.current.startDist;
+      const newZoomX = Math.min(300, Math.max(20, pinchStateRef.current.startZoomX * scale));
+      const newZoomY = Math.min(40, Math.max(10, pinchStateRef.current.startZoomY * scale));
+      setZoomX(newZoomX);
+      setZoomY(newZoomY);
+    };
+
+    const handleTouchEndPinch = () => {
+      pinchStateRef.current = null;
+    };
+
+    canvas.addEventListener('touchstart', handleTouchStartPinch, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchMovePinch, { passive: false });
+    canvas.addEventListener('touchend', handleTouchEndPinch);
+    return () => {
+      canvas.removeEventListener('touchstart', handleTouchStartPinch);
+      canvas.removeEventListener('touchmove', handleTouchMovePinch);
+      canvas.removeEventListener('touchend', handleTouchEndPinch);
+    };
+  }, []);
+
   // 键盘标签画布 - 只在 zoomY 变化时重绘
   const keyLabelCanvasRef = useCallback((el) => {
     if (!el) return;
@@ -582,8 +634,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
         <div style={{ width: 38, flexShrink: 0, background: 'var(--track-bg)', borderRight: '1px solid var(--border)', overflow: 'hidden' }}>
           <canvas ref={keyLabelCanvasRef} style={{ display: 'block' }} />
         </div>
-        <div style={{ flex: 1, overflow: 'auto', minHeight: 0, position: 'relative' }} onScroll={(e) => { offsetXRef.current = e.target.scrollLeft; offsetYRef.current = e.target.scrollTop; requestRedraw(); }}>
-          <canvas ref={canvasRef} width={800} height={300} style={{ display: 'block' }} />
+        <div className="piano-roll-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0, position: 'relative' }} onScroll={(e) => { offsetXRef.current = e.target.scrollLeft; offsetYRef.current = e.target.scrollTop; requestRedraw(); }}>
+          <canvas ref={canvasRef} width={800} height={300} style={{ display: 'block', touchAction: editMode === 'pointer' ? 'pan-x pan-y' : 'none' }} />
           <canvas ref={playheadCanvasRef} width={800} height={300} style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
         </div>
       </div>
