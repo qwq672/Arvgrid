@@ -39,7 +39,7 @@ export default function SettingsPanel({
   };
 
   const bufsize = (typeof bufferSize === 'number') ? bufferSize : 
-    (bufferSize === 'short' ? 0.08 : bufferSize === 'medium' ? 0.15 : 0.3);
+    (bufferSize === 'short' ? 0.08 : bufferSize === 'medium' ? 0.15 : bufferSize === 'ultra' ? 1.0 : 0.3);
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex' }}>
@@ -112,11 +112,16 @@ export default function SettingsPanel({
               <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
                 {t.bufferSize}: {(bufsize * 1000).toFixed(0)}ms (lookahead)
               </label>
-              <input type="range" min="40" max="500" step="10" value={bufsize * 1000}
+              <input type="range" min="40" max="1000" step="10" value={bufsize * 1000}
                 onChange={e => {
                   const ms = parseInt(e.target.value) / 1000;
                   if (onBufferSizeChange) onBufferSizeChange(ms);
                 }} style={{ width: '100%' }} />
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '4px 0', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                <input type="checkbox" checked={bufferSize === 'ultra'}
+                  onChange={e => { if (onBufferSizeChange) onBufferSizeChange(e.target.checked ? 'ultra' : 'medium'); }} />
+                {lang === 'zh' ? '高内存模式（预建所有音色缓冲区，占用更多内存但播放更流畅）' : 'High Memory Mode (pre-build all buffers, uses more RAM for smoother playback)'}
+              </label>
             </div>
           )}
 

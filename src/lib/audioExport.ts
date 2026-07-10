@@ -67,40 +67,40 @@ export async function renderAudioBuffer(
 
     // 尝试使用 SF2 样本 - 使用 sampleIndex 进行 O(1) 查找
     if (sf2Data && sf2Data.presets) {
-      const preset = sf2Data.presets.find((p: any) => p.program === program) || sf2Data.presets[0];
+      // 优先匹配 bank 0（旋律乐器），避免误选鼓组（bank 128）
+      const preset = sf2Data.presets.find((p: any) => p.program === program && p.bank === 0)
+                  || sf2Data.presets.find((p: any) => p.program === program)
+                  || sf2Data.presets[0];
       if (preset && preset.sampleIndex) {
         const midi = noteToMidi(event.pitch);
         const vol = (velocity / 127) * 0.12;
-        
-        // 使用预建的 sampleIndex 数组进行 O(1) 查找
+
         let bestSample = preset.sampleIndex[midi];
-        
-        // 如果索引中没有，搜索附近音符（最多偏移 5 个半音）
+
         if (!bestSample) {
           for (let offset = 1; offset <= 5; offset++) {
             bestSample = preset.sampleIndex[midi + offset] || preset.sampleIndex[midi - offset];
             if (bestSample) break;
           }
         }
-        
-        // 仍未找到则回退到中央 C
+
         if (!bestSample) {
           bestSample = preset.sampleIndex[60];
         }
 
         if (bestSample) {
-          // 延迟创建 AudioBuffer（按需创建并缓存）
           if (!bestSample.audioBuffer && bestSample.pcmData) {
             try {
               const length = bestSample.pcmData.length;
               const audioBuffer = offlineCtx.createBuffer(1, length, bestSample.sampleRate);
               const channelData = audioBuffer.getChannelData(0);
+              const pcm = bestSample.pcmData;
               for (let i = 0; i < length; i++) {
-                channelData[i] = bestSample.pcmData[i] / 32768;
+                channelData[i] = pcm[i] / 32768;
               }
               bestSample.audioBuffer = audioBuffer;
             } catch (e) {
-              console.warn('Failed to create audio buffer:', e);
+              // 静默失败，跳过此音符
             }
           }
 
@@ -108,8 +108,7 @@ export async function renderAudioBuffer(
             const source = offlineCtx.createBufferSource();
             source.buffer = bestSample.audioBuffer;
             const rootKey = bestSample.rootKey || 60;
-            
-            // 计算播放速率，包含 pitchCorrection
+
             let playbackRate = Math.pow(2, (midi - rootKey) / 12);
             if (bestSample.pitchCorrection) {
               playbackRate *= Math.pow(2, bestSample.pitchCorrection / 1200);
@@ -133,13 +132,21 @@ export async function renderAudioBuffer(
     }
 
     processedEvents++;
-    if (onProgress && processedEvents % 10 === 0) {
+    // 每 50 个音符让出主线程，允许 UI 更新进度
+    if (onProgress && processedEvents % 50 === 0) {
       onProgress({
         current: processedEvents,
         total: totalEvents,
         stage: 'rendering',
       });
+      await new Promise(r => setTimeout(r, 0));
     }
+  }
+
+  // 通知 UI 即将开始渲染
+  if (onProgress) {
+    onProgress({ current: totalEvents, total: totalEvents, stage: 'rendering' });
+    await new Promise(r => setTimeout(r, 0));
   }
 
   // 渲染音频

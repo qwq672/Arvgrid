@@ -3,7 +3,7 @@ import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
 
 // 前瞻调度器默认参数
-const MAX_POLYPHONY = 20; // 降低复音数上限，减少 CPU 占用
+const MAX_POLYPHONY = 32; // 复音数上限
 
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
 // 更大的 lookahead 和更短的 interval 可以减少卡顿
@@ -11,6 +11,7 @@ const BUFFER_PRESETS = {
   short: [0.15, 20],   // 低延迟模式
   medium: [0.3, 25],   // 平衡模式
   long: [0.6, 40],     // 高稳定性模式
+  ultra: [1.0, 50],    // 极致稳定模式（高内存占用）
 };
 
 export function useAudioEngine() {
@@ -724,7 +725,11 @@ export function useAudioEngine() {
       });
     });
     events.sort((a, b) => a.time - b.time);
-    const total = events.length ? Math.max(...events.map(e => e.time + e.duration)) : 0;
+    let total = 0;
+    for (let i = 0; i < events.length; i++) {
+      const end = events[i].time + events[i].duration;
+      if (end > total) total = end;
+    }
     setTotalDuration(total);
     totalDurationRef.current = total;
     if (total === 0) return;
@@ -826,6 +831,7 @@ export function useAudioEngine() {
   // 获取当前播放时间（供组件读取）
   const getPlaybackTime = useCallback(() => {
     if (!isPlayingRef.current) return 0;
+    if (isPausedRef.current) return pauseTimeRef.current;
     const ctx = audioCtxRef.current;
     if (!ctx) return 0;
     return Math.max(0, ctx.currentTime - startTimeRef.current);
@@ -892,8 +898,9 @@ export function useAudioEngine() {
         sf2BuffersRef.current = {};
         sf2PresetMapRef.current.clear();
         setSoundSource('sf2');
-        // 预热：为第一个 preset 的中央八度预建 AudioBuffer，减少首次播放卡顿
-        prewarmSF2Buffers(sf2Data, audioCtxRef.current);
+        // 根据缓冲区模式预热 AudioBuffer
+        const warmMode = bufferSizeRef.current === 'ultra' ? 'full' : 'fast';
+        prewarmSF2Buffers(sf2Data, audioCtxRef.current, warmMode);
         return { success: true, name: sf2Data.name || 'SF2' };
       } catch (err) {
         console.error('SF2 load failed:', err);
@@ -926,33 +933,48 @@ function noteToMidi(pitch) {
   return (parseInt(m[2])+1)*12 + map[m[1]];
 }
 
-// 预热 SF2 AudioBuffer：为第一个 preset 的中央区域音符预建 buffer
-// 使用分块处理避免阻塞主线程
-function prewarmSF2Buffers(sf2Data, ctx) {
+// 预热 SF2 AudioBuffer：为 preset 预建 buffer
+// mode: 'fast' = 只预热中央八度, 'full' = 预热全部音符（高内存模式）
+function prewarmSF2Buffers(sf2Data, ctx, mode = 'fast') {
   if (!sf2Data || !sf2Data.presets || !sf2Data.presets.length || !ctx) return;
-  // 只预热前 4 个 preset 的中央八度 (48-72)
-  const presetsToWarm = sf2Data.presets.slice(0, 4);
-  let midi = 48;
 
-  const warmNext = () => {
-    if (midi > 72) return;
-    for (const preset of presetsToWarm) {
-      const sample = preset.sampleIndex[midi];
-      if (sample && !sample.audioBuffer && sample.pcmData) {
-        try {
-          const length = sample.pcmData.length;
-          const audioBuffer = ctx.createBuffer(1, length, sample.sampleRate);
-          const channelData = audioBuffer.getChannelData(0);
-          for (let i = 0; i < length; i++) {
-            channelData[i] = sample.pcmData[i] / 32768;
-          }
-          sample.audioBuffer = audioBuffer;
-        } catch (e) {}
+  // 收集所有需要预热的 (preset, midi, sample) 组合，去重
+  const tasks = [];
+  const seen = new Set();
+  const maxPresets = mode === 'full' ? sf2Data.presets.length : Math.min(8, sf2Data.presets.length);
+  const midiStart = mode === 'full' ? 0 : 36;
+  const midiEnd = mode === 'full' ? 128 : 84;
+
+  for (let p = 0; p < maxPresets; p++) {
+    const preset = sf2Data.presets[p];
+    if (!preset.sampleIndex) continue;
+    for (let m = midiStart; m < midiEnd; m++) {
+      const sample = preset.sampleIndex[m];
+      if (sample && !sample.audioBuffer && sample.pcmData && !seen.has(sample)) {
+        seen.add(sample);
+        tasks.push(sample);
       }
     }
-    midi++;
-    if (midi <= 72) {
-      // 分块：每帧处理一个 MIDI 音符，避免阻塞
+  }
+
+  let taskIdx = 0;
+  const warmNext = () => {
+    // 每帧处理多个任务，但限制总量避免长时间阻塞
+    const batchSize = mode === 'full' ? 8 : 2;
+    for (let i = 0; i < batchSize && taskIdx < tasks.length; i++, taskIdx++) {
+      const sample = tasks[taskIdx];
+      try {
+        const length = sample.pcmData.length;
+        const audioBuffer = ctx.createBuffer(1, length, sample.sampleRate);
+        const channelData = audioBuffer.getChannelData(0);
+        const pcm = sample.pcmData;
+        for (let j = 0; j < length; j++) {
+          channelData[j] = pcm[j] / 32768;
+        }
+        sample.audioBuffer = audioBuffer;
+      } catch (e) {}
+    }
+    if (taskIdx < tasks.length) {
       requestAnimationFrame(warmNext);
     }
   };

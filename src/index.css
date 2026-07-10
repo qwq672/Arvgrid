@@ -263,3 +263,65 @@ body.touch-mode .transport button,
   margin: 0;
   border: none;
 }
+
+/* 小屏幕触屏模式优化 */
+@media (max-width: 600px) {
+  body.touch-mode .menu-bar,
+  .touch-mode .menu-bar {
+    flex-wrap: wrap;
+    height: auto;
+    max-height: 96px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 4px;
+    gap: 2px;
+  }
+  body.touch-mode .menu-item,
+  .touch-mode .menu-item {
+    padding: 4px 6px;
+    min-height: 32px;
+    font-size: 0.65rem;
+    white-space: nowrap;
+  }
+  body.touch-mode button,
+  .touch-mode button {
+    min-height: 36px;
+    min-width: 36px;
+    padding: 3px 6px;
+  }
+  body.touch-mode .edit-toolbar button,
+  .touch-mode .edit-toolbar button {
+    padding: 4px 8px;
+    min-height: 36px;
+  }
+  body.touch-mode .transport button,
+  .touch-mode .transport button {
+    min-height: 40px;
+    min-width: 40px;
+    padding: 6px 10px;
+  }
+  body.touch-mode .piano-roll-scroll,
+  .touch-mode .piano-roll-scroll {
+    touch-action: pan-x pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* 极小屏幕（手机竖屏）触屏模式 */
+@media (max-width: 400px) {
+  body.touch-mode .menu-bar,
+  .touch-mode .menu-bar {
+    max-height: 72px;
+  }
+  body.touch-mode .menu-item,
+  .touch-mode .menu-item {
+    padding: 3px 4px;
+    min-height: 28px;
+    font-size: 0.6rem;
+  }
+  body.touch-mode button,
+  .touch-mode button {
+    min-height: 32px;
+    min-width: 32px;
+  }
+}

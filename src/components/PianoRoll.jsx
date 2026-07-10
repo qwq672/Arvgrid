@@ -100,7 +100,12 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   useEffect(() => { selectedSetRef.current = new Set(selectedNotes); }, [selectedNotes]);
 
   useEffect(() => {
-    maxSecRef.current = track.notes.length ? Math.max(4, ...track.notes.map(n => n.startSec + n.durationSec)) : 4;
+    let maxSec = 4;
+    for (let i = 0; i < track.notes.length; i++) {
+      const end = track.notes[i].startSec + track.notes[i].durationSec;
+      if (end > maxSec) maxSec = end;
+    }
+    maxSecRef.current = maxSec;
   }, [track.notes]);
 
   // 空间索引：按 pitch 分桶，加速音符查找
@@ -478,12 +483,18 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const trk = trackRef.current;
     if (!trk || !trk.notes) return;
     onNotesChange(trk.notes.map(n => selectedSetRef.current.has(n) ? { ...n, velocity: Math.max(1, Math.min(127, (n.velocity || 90) + delta)) } : n));
-    closeCM();
-  }, [onNotesChange, closeCM]);
+  }, [onNotesChange]);
+
+  const setVelocity = useCallback((value) => {
+    const trk = trackRef.current;
+    if (!trk || !trk.notes) return;
+    onNotesChange(trk.notes.map(n => selectedSetRef.current.has(n) ? { ...n, velocity: Math.max(1, Math.min(127, value)) } : n));
+  }, [onNotesChange]);
 
   const copySelected = useCallback(() => {
     if (selectedNotes.length === 0) return;
-    const minStart = Math.min(...selectedNotes.map(n => n.startSec));
+    let minStart = Infinity;
+    for (const n of selectedNotes) { if (n.startSec < minStart) minStart = n.startSec; }
     setClipboard(selectedNotes.map(n => ({ ...n, startSec: n.startSec - minStart })));
     closeCM();
   }, [selectedNotes, closeCM]);
@@ -652,6 +663,17 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
             <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
             <button onClick={() => changeVelocity(10)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>{t.changeVelocity} +10</button>
             <button onClick={() => changeVelocity(-10)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>{t.changeVelocity} -10</button>
+            {selectedNotes.length > 0 && (
+              <div style={{ padding: '4px 8px' }}>
+                <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: 2 }}>
+                  {lang === 'zh' ? '音量' : 'Volume'}: {selectedNotes[0]?.velocity || 0}
+                </label>
+                <input type="range" min="1" max="127" value={selectedNotes[0]?.velocity || 90}
+                  onChange={e => setVelocity(parseInt(e.target.value))}
+                  onMouseDown={e => e.stopPropagation()}
+                  style={{ width: '100%', cursor: 'pointer' }} />
+              </div>
+            )}
             <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
             <button onClick={copySelected} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>{t.copy}</button>
             <button onClick={cutSelected} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>{t.cut}</button>

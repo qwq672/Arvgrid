@@ -27,6 +27,63 @@ export function noteToMidi(pitch) {
   return (octave + 1) * 12 + semitone;
 }
 
+// 将 tick 转换为秒，使用 tempo map
+function tickToSec(tick, tempoMap, ticksPerBeat) {
+  if (tempoMap.length === 0) return tick / ticksPerBeat / 2; // 默认 120 BPM
+  let sec = 0;
+  let lastTick = 0;
+  let lastBpm = tempoMap[0].bpm;
+  for (let i = 0; i < tempoMap.length; i++) {
+    const { tick: t, bpm } = tempoMap[i];
+    if (t > tick) break;
+    sec += (t - lastTick) / ticksPerBeat / (lastBpm / 60);
+    lastTick = t;
+    lastBpm = bpm;
+  }
+  sec += (tick - lastTick) / ticksPerBeat / (lastBpm / 60);
+  return sec;
+}
+
+// GM 乐器名称
+const GM_INSTRUMENTS = [
+  'Acoustic Grand Piano', 'Bright Acoustic Piano', 'Electric Grand Piano', 'Honky-tonk Piano',
+  'Electric Piano 1', 'Electric Piano 2', 'Harpsichord', 'Clavinet',
+  'Celesta', 'Glockenspiel', 'Music Box', 'Vibraphone',
+  'Marimba', 'Xylophone', 'Tubular Bells', 'Dulcimer',
+  'Drawbar Organ', 'Percussive Organ', 'Rock Organ', 'Church Organ',
+  'Reed Organ', 'Accordion', 'Harmonica', 'Tango Accordion',
+  'Acoustic Guitar (nylon)', 'Acoustic Guitar (steel)', 'Electric Guitar (jazz)', 'Electric Guitar (clean)',
+  'Electric Guitar (muted)', 'Overdriven Guitar', 'Distortion Guitar', 'Guitar Harmonics',
+  'Acoustic Bass', 'Electric Bass (finger)', 'Electric Bass (pick)', 'Fretless Bass',
+  'Slap Bass 1', 'Slap Bass 2', 'Synth Bass 1', 'Synth Bass 2',
+  'Violin', 'Viola', 'Cello', 'Contrabass',
+  'Tremolo Strings', 'Pizzicato Strings', 'Orchestral Harp', 'Timpani',
+  'String Ensemble 1', 'String Ensemble 2', 'Synth Strings 1', 'Synth Strings 2',
+  'Choir Aahs', 'Voice Oohs', 'Synth Voice', 'Orchestra Hit',
+  'Trumpet', 'Trombone', 'Tuba', 'Muted Trumpet',
+  'French Horn', 'Brass Section', 'Synth Brass 1', 'Synth Brass 2',
+  'Soprano Sax', 'Alto Sax', 'Tenor Sax', 'Baritone Sax',
+  'Oboe', 'English Horn', 'Bassoon', 'Clarinet',
+  'Piccolo', 'Flute', 'Recorder', 'Pan Flute',
+  'Blown Bottle', 'Shakuhachi', 'Whistle', 'Ocarina',
+  'Lead 1 (square)', 'Lead 2 (sawtooth)', 'Lead 3 (calliope)', 'Lead 4 (chiff)',
+  'Lead 5 (charang)', 'Lead 6 (voice)', 'Lead 7 (fifths)', 'Lead 8 (bass + lead)',
+  'Pad 1 (new age)', 'Pad 2 (warm)', 'Pad 3 (polysynth)', 'Pad 4 (choir)',
+  'Pad 5 (bowed)', 'Pad 6 (metallic)', 'Pad 7 (halo)', 'Pad 8 (sweep)',
+  'FX 1 (rain)', 'FX 2 (soundtrack)', 'FX 3 (crystal)', 'FX 4 (atmosphere)',
+  'FX 5 (brightness)', 'FX 6 (goblins)', 'FX 7 (echoes)', 'FX 8 (sci-fi)',
+  'Sitar', 'Banjo', 'Shamisen', 'Koto',
+  'Kalimba', 'Bag pipe', 'Fiddle', 'Shanai',
+  'Tinkle Bell', 'Agogo', 'Steel Drums', 'Woodblock',
+  'Taiko Drum', 'Melodic Tom', 'Synth Drum', 'Reverse Cymbal',
+  'Guitar Fret Noise', 'Breath Noise', 'Seashore', 'Bird Tweet',
+  'Telephone Ring', 'Helicopter', 'Applause', 'Gunshot'
+];
+
+function getInstrumentName(program) {
+  return GM_INSTRUMENTS[program] || `Instrument ${program}`;
+}
+
 /**
  * 解析 MIDI 文件 (ArrayBuffer)
  * 返回: { bpm, tracks, title, copyright }
@@ -47,8 +104,9 @@ export async function parseMidiFile(arrayBuffer) {
   const ticksPerBeat = division & 0x7FFF;
   if (ticksPerBeat <= 0) throw new Error("Invalid division");
 
-  let tempo = 120;  // 默认 BPM
-  const tracksData = [];
+  // 第一遍：收集所有轨道的原始事件，构建全局 tempo map
+  const tempoMap = []; // [{ tick, bpm }]
+  const trackEvents = []; // 每个轨道的原始事件
   let globalTitle = "", globalCopyright = "";
 
   for (let t = 0; t < numTracks; t++) {
@@ -58,10 +116,8 @@ export async function parseMidiFile(arrayBuffer) {
     const trackLen = (data[pos]<<24) | (data[pos+1]<<16) | (data[pos+2]<<8) | data[pos+3]; pos += 4;
     const end = pos + trackLen;
     let currentTick = 0;
-    let notes = [];
-    let prog = 0;
+    const events = [];
     let trackName = "";
-    const noteOnMap = new Map(); // key: `${channel}_${pitch}`
     let runningStatus = null;
 
     while (pos < end) {
@@ -75,7 +131,6 @@ export async function parseMidiFile(arrayBuffer) {
 
       let event = data[pos++];
       if (event < 0x80) {
-        // 运行状态省略
         if (runningStatus === null) throw new Error("Running status error");
         event = runningStatus;
         pos--;
@@ -90,7 +145,8 @@ export async function parseMidiFile(arrayBuffer) {
         const len = data[pos++];
         if (metaType === 0x51 && len === 3) { // 设置速度
           const tt = (data[pos]<<16) | (data[pos+1]<<8) | data[pos+2];
-          tempo = 60000000 / tt;
+          const bpm = 60000000 / tt;
+          tempoMap.push({ tick: currentTick, bpm });
           pos += 3;
         } else if (metaType === 0x03 && len > 0) { // 轨道名称
           trackName = new TextDecoder().decode(data.slice(pos, pos + len));
@@ -105,48 +161,18 @@ export async function parseMidiFile(arrayBuffer) {
       } else if (type === 0x80) { // Note Off
         const pitch = data[pos++];
         const velocity = data[pos++];
-        const key = `${channel}_${pitch}`;
-        if (noteOnMap.has(key)) {
-          const on = noteOnMap.get(key);
-          const startSec = on.tick / ticksPerBeat / (tempo / 60);
-          const durSec = (currentTick - on.tick) / ticksPerBeat / (tempo / 60);
-          if (durSec > 0) {
-            notes.push({
-              pitch: midiToNote(pitch),
-              startSec,
-              durationSec: durSec,
-              velocity: on.velocity
-            });
-          }
-          noteOnMap.delete(key);
-        }
+        events.push({ type: 'noteOff', tick: currentTick, channel, pitch, velocity });
       } else if (type === 0x90) { // Note On
         const pitch = data[pos++];
         const velocity = data[pos++];
-        if (velocity > 0) {
-          noteOnMap.set(`${channel}_${pitch}`, { tick: currentTick, velocity });
-        } else {
-          // velocity = 0 视为 Note Off
-          const key = `${channel}_${pitch}`;
-          if (noteOnMap.has(key)) {
-            const on = noteOnMap.get(key);
-            const startSec = on.tick / ticksPerBeat / (tempo / 60);
-            const durSec = (currentTick - on.tick) / ticksPerBeat / (tempo / 60);
-            if (durSec > 0) {
-              notes.push({
-                pitch: midiToNote(pitch),
-                startSec,
-                durationSec: durSec,
-                velocity: on.velocity
-              });
-            }
-            noteOnMap.delete(key);
-          }
-        }
+        events.push({ type: 'noteOn', tick: currentTick, channel, pitch, velocity });
       } else if (type === 0xC0) { // Program Change
-        prog = data[pos++];
+        const program = data[pos++];
+        events.push({ type: 'program', tick: currentTick, channel, program });
       } else if (type === 0xB0) { // Controller
-        pos += 2;
+        const controller = data[pos++];
+        const value = data[pos++];
+        events.push({ type: 'controller', tick: currentTick, channel, controller, value });
       } else {
         // 跳过其他事件 (Poly Pressure, Pitch Bend, SysEx 等)
         if (type === 0xA0 || type === 0xD0) pos += 1;
@@ -162,34 +188,126 @@ export async function parseMidiFile(arrayBuffer) {
       }
     }
 
-    // 处理未关闭的音符
-    for (const [key, on] of noteOnMap.entries()) {
-      const parts = key.split('_');
-      const pitch = parseInt(parts[1]);
-      const startSec = on.tick / ticksPerBeat / (tempo / 60);
-      const durSec = (currentTick - on.tick) / ticksPerBeat / (tempo / 60);
-      if (durSec > 0) {
-        notes.push({
-          pitch: midiToNote(pitch),
-          startSec,
-          durationSec: durSec,
-          velocity: on.velocity
-        });
+    trackEvents.push({ name: trackName, events });
+  }
+
+  // 对 tempo map 按 tick 排序
+  tempoMap.sort((a, b) => a.tick - b.tick);
+
+  // 确定初始 BPM
+  const initialBpm = tempoMap.length > 0 ? tempoMap[0].bpm : 120;
+
+  // 第二遍：按 channel 分组音符，应用 program change
+  // 每个 MIDI track 可能包含多个 channel，每个 channel 有不同的乐器
+  const channelTracks = new Map(); // key: `${trackIdx}_${channel}`, value: { name, program, notes, channel }
+
+  for (let t = 0; t < trackEvents.length; t++) {
+    const { name, events } = trackEvents[t];
+    // 每个 channel 的 program 状态
+    const channelPrograms = new Map(); // channel -> program
+    // 每个 channel 的活跃音符
+    const noteOnMap = new Map(); // key: `${channel}_${pitch}`, value: { tick, velocity }
+
+    for (const ev of events) {
+      if (ev.type === 'program') {
+        channelPrograms.set(ev.channel, ev.program);
+      } else if (ev.type === 'noteOn') {
+        if (ev.velocity > 0) {
+          noteOnMap.set(`${ev.channel}_${ev.pitch}`, { tick: ev.tick, velocity: ev.velocity });
+        } else {
+          // velocity = 0 视为 Note Off
+          const key = `${ev.channel}_${ev.pitch}`;
+          if (noteOnMap.has(key)) {
+            const on = noteOnMap.get(key);
+            const startSec = tickToSec(on.tick, tempoMap, ticksPerBeat);
+            const durSec = tickToSec(ev.tick, tempoMap, ticksPerBeat) - startSec;
+            if (durSec > 0) {
+              const prog = channelPrograms.get(ev.channel) || 0;
+              const trackKey = `${t}_${ev.channel}`;
+              if (!channelTracks.has(trackKey)) {
+                channelTracks.set(trackKey, {
+                  name: name || getInstrumentName(prog),
+                  program: prog,
+                  notes: [],
+                });
+              }
+              channelTracks.get(trackKey).notes.push({
+                pitch: midiToNote(ev.pitch),
+                startSec,
+                durationSec: durSec,
+                velocity: on.velocity,
+              });
+            }
+            noteOnMap.delete(key);
+          }
+        }
+      } else if (ev.type === 'noteOff') {
+        const key = `${ev.channel}_${ev.pitch}`;
+        if (noteOnMap.has(key)) {
+          const on = noteOnMap.get(key);
+          const startSec = tickToSec(on.tick, tempoMap, ticksPerBeat);
+          const durSec = tickToSec(ev.tick, tempoMap, ticksPerBeat) - startSec;
+          if (durSec > 0) {
+            const prog = channelPrograms.get(ev.channel) || 0;
+            const trackKey = `${t}_${ev.channel}`;
+            if (!channelTracks.has(trackKey)) {
+              channelTracks.set(trackKey, {
+                name: name || getInstrumentName(prog),
+                program: prog,
+                notes: [],
+              });
+            }
+            channelTracks.get(trackKey).notes.push({
+              pitch: midiToNote(ev.pitch),
+              startSec,
+              durationSec: durSec,
+              velocity: on.velocity,
+            });
+          }
+          noteOnMap.delete(key);
+        }
       }
     }
 
-    if (notes.length > 0) {
-      tracksData.push({
-        name: trackName || `Track ${tracksData.length + 1}`,
-        program: prog,
-        notes: notes.sort((a, b) => a.startSec - b.startSec)
-      });
+    // 处理未关闭的音符
+    for (const [key, on] of noteOnMap.entries()) {
+      const parts = key.split('_');
+      const channel = parseInt(parts[0]);
+      const pitch = parseInt(parts[1]);
+      const startSec = tickToSec(on.tick, tempoMap, ticksPerBeat);
+      const durSec = tickToSec(events[events.length - 1].tick, tempoMap, ticksPerBeat) - startSec;
+      if (durSec > 0) {
+        const prog = channelPrograms.get(channel) || 0;
+        const trackKey = `${t}_${channel}`;
+        if (!channelTracks.has(trackKey)) {
+          channelTracks.set(trackKey, {
+            name: name || getInstrumentName(prog),
+            program: prog,
+            notes: [],
+          });
+        }
+        channelTracks.get(trackKey).notes.push({
+          pitch: midiToNote(pitch),
+          startSec,
+          durationSec: durSec,
+          velocity: on.velocity,
+        });
+      }
+    }
+  }
+
+  // 转换为数组并排序
+  const tracksData = [];
+  for (const track of channelTracks.values()) {
+    if (track.notes.length > 0) {
+      track.notes.sort((a, b) => a.startSec - b.startSec);
+      tracksData.push(track);
     }
   }
 
   if (tracksData.length === 0) throw new Error("No notes found in MIDI file");
   return {
-    bpm: tempo,
+    bpm: initialBpm,
     tracks: tracksData,
     title: globalTitle,
     copyright: globalCopyright
