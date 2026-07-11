@@ -165,7 +165,7 @@ const Editor = memo(({
               marginTop: 4,
             }}
           >
-            {panelCollapsed ? '▶' : '◀'}
+            {panelCollapsed ? <Icons.Right /> : <Icons.Left />}
           </button>
         )}
         <div className={mode === 'touch' && panelCollapsed ? 'track-panel-collapsed' : ''}>

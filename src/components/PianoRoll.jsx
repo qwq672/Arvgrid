@@ -4,6 +4,7 @@ import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 
 const BASE_MIDI = 36, NOTE_COUNT = 61;
+const DPR = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
 const noteNames = [];
 for (let i = 0; i < NOTE_COUNT; i++) noteNames.push(midiToNote(BASE_MIDI + i));
 
@@ -52,6 +53,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const [selectedNotes, setSelectedNotes] = useState([]);
   const [clipboard, setClipboard] = useState([]);
   const [marqueeRect, setMarqueeRect] = useState(null);
+  const [showGhosts, setShowGhosts] = useState(true);
   const t = useTranslation(lang);
   const maxSecRef = useRef(4);
   const selectedSetRef = useRef(new Set());
@@ -63,6 +65,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const trackRef = useRef(track);
   const trackColorRef = useRef(trackColor);
   const ghostTracksRef = useRef(ghostTracks);
+  const showGhostsRef = useRef(showGhosts);
   const zoomXRef = useRef(zoomX);
   const zoomYRef = useRef(zoomY);
   const editModeRef = useRef(editMode);
@@ -78,6 +81,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   useEffect(() => { trackRef.current = track; }, [track]);
   useEffect(() => { trackColorRef.current = trackColor; }, [trackColor]);
   useEffect(() => { ghostTracksRef.current = ghostTracks; }, [ghostTracks]);
+  useEffect(() => { showGhostsRef.current = showGhosts; }, [showGhosts]);
   useEffect(() => { zoomXRef.current = zoomX; }, [zoomX]);
   useEffect(() => { zoomYRef.current = zoomY; }, [zoomY]);
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
@@ -136,40 +140,49 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const ghosts = ghostTracksRef.current;
     const mRect = marqueeRectRef.current;
 
-    canvas.width = Math.max(800, maxSec * zx + 120);
-    canvas.height = NOTE_COUNT * zy;
+    // 高 DPI 支持：逻辑尺寸用于绘制，物理尺寸 = 逻辑 × DPR
+    const logicalW = Math.max(800, maxSec * zx + 120);
+    const logicalH = NOTE_COUNT * zy;
+    const physW = Math.round(logicalW * DPR);
+    const physH = Math.round(logicalH * DPR);
+    if (canvas.width !== physW) canvas.width = physW;
+    if (canvas.height !== physH) canvas.height = physH;
+    canvas.style.width = logicalW + 'px';
+    canvas.style.height = logicalH + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, logicalW, logicalH);
 
     // 节拍网格 - 只绘制可见区域
     const beatSec = 60 / 120;
     const startBeat = Math.max(0, Math.floor(ox / (beatSec * zx)));
-    const endBeat = Math.min(Math.ceil(maxSec / beatSec) + 1, Math.ceil((ox + canvas.width) / (beatSec * zx)) + 1);
+    const endBeat = Math.min(Math.ceil(maxSec / beatSec) + 1, Math.ceil((ox + logicalW) / (beatSec * zx)) + 1);
     for (let b = startBeat; b <= endBeat; b++) {
       const x = b * beatSec * zx - ox;
       ctx.beginPath();
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvas.height);
+      ctx.lineTo(x, logicalH);
       if (b % 4 === 0) { ctx.strokeStyle = '#3a3a42'; ctx.lineWidth = 1; }
       else { ctx.strokeStyle = '#2c2c34'; ctx.lineWidth = 0.5; }
       ctx.stroke();
     }
     // 水平网格 - 只绘制可见区域
     const startNote = Math.max(0, Math.floor(oy / zy));
-    const endNote = Math.min(NOTE_COUNT, Math.ceil((oy + canvas.height) / zy) + 1);
+    const endNote = Math.min(NOTE_COUNT, Math.ceil((oy + logicalH) / zy) + 1);
     for (let i = startNote; i <= endNote; i++) {
       const y = i * zy - oy;
       if (i % 12 === 0) { ctx.strokeStyle = '#3a3a42'; ctx.lineWidth = 0.8; }
       else { ctx.strokeStyle = '#2a2a30'; ctx.lineWidth = 0.4; }
       ctx.beginPath();
       ctx.moveTo(0, y);
-      ctx.lineTo(canvas.width, y);
+      ctx.lineTo(logicalW, y);
       ctx.stroke();
     }
 
     const selSet = selectedSetRef.current;
 
     // Ghost notes from other tracks (50% opacity) - 只绘制可见区域
+    if (showGhostsRef.current) {
     for (let gi = 0; gi < ghosts.length; gi++) {
       const { track: gt, color: gc } = ghosts[gi];
       if (!gt || !gt.notes) continue;
@@ -184,10 +197,11 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
         const y = pitchIdx * zy - oy;
         const w = Math.max(2, n.durationSec * zx);
         // 可见性检查
-        if (x + w < 0 || x > canvas.width || y + zy < 0 || y > canvas.height) continue;
+        if (x + w < 0 || x > logicalW || y + zy < 0 || y > logicalH) continue;
         ctx.fillRect(x, y, w, zy - 2);
       }
     }
+    } // end if showGhosts
 
     // 当前轨道音符 - 只绘制可见区域
     const notes = trk.notes;
@@ -201,7 +215,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       const w = Math.max(2, n.durationSec * zx);
       const h = zy - 2;
       // 可见性检查
-      if (x + w < 0 || x > canvas.width || y + h < 0 || y > canvas.height) continue;
+      if (x + w < 0 || x > logicalW || y + h < 0 || y > logicalH) continue;
       const isSel = selSet.has(n);
       ctx.fillStyle = isSel ? lightenColor(tc) : tc;
       ctx.fillRect(x, y, w, h);
@@ -235,7 +249,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   // 初始绘制和依赖变化时触发 - 使用 requestRedraw 批量处理
   useEffect(() => {
     requestRedraw();
-  }, [track, trackColor, ghostTracks, zoomX, zoomY, marqueeRect, draw]);
+  }, [track, trackColor, ghostTracks, showGhosts, zoomX, zoomY, marqueeRect, draw]);
 
   // 选中状态变化时触发重绘
   useEffect(() => {
@@ -247,22 +261,27 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const mainCanvas = canvasRef.current;
+    // 高 DPI：playhead canvas 匹配主 canvas 的物理尺寸和逻辑尺寸
     if (mainCanvas) {
-      const w = mainCanvas.width, h = mainCanvas.height;
-      if (playheadSizeRef.current.width !== w || playheadSizeRef.current.height !== h) {
-        canvas.width = w; canvas.height = h;
-        playheadSizeRef.current = { width: w, height: h };
+      const physW = mainCanvas.width, physH = mainCanvas.height;
+      const logicalW = physW / DPR, logicalH = physH / DPR;
+      if (playheadSizeRef.current.width !== physW || playheadSizeRef.current.height !== physH) {
+        canvas.width = physW; canvas.height = physH;
+        canvas.style.width = logicalW + 'px';
+        canvas.style.height = logicalH + 'px';
+        playheadSizeRef.current = { width: physW, height: physH };
       }
-    }
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (isPlaying && currentTime > 0) {
-      const px = currentTime * zoomX - offsetXRef.current;
-      ctx.strokeStyle = '#cc4444';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(px, 0);
-      ctx.lineTo(px, canvas.height);
-      ctx.stroke();
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      ctx.clearRect(0, 0, logicalW, logicalH);
+      if (isPlaying && currentTime > 0) {
+        const px = currentTime * zoomX - offsetXRef.current;
+        ctx.strokeStyle = '#cc4444';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, logicalH);
+        ctx.stroke();
+      }
     }
   }, [isPlaying, zoomX]);
 
@@ -282,9 +301,9 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const canvasToLogical = (clientX, clientY) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-    const sx = canvas.width / rect.width;
-    const sy = canvas.height / rect.height;
-    return { x: (clientX - rect.left) * sx, y: (clientY - rect.top) * sy };
+    // 高 DPI 下 canvas.style.width = logicalW, rect.width = logicalW
+    // 所以 CSS 坐标直接映射到逻辑坐标
+    return { x: (clientX - rect.left) * (canvas.width / rect.width / DPR), y: (clientY - rect.top) * (canvas.height / rect.height / DPR) };
   };
 
   const logicalToSecPitch = (lx, ly) => {
@@ -617,10 +636,15 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   // 键盘标签画布 - 只在 zoomY 变化时重绘
   const keyLabelCanvasRef = useCallback((el) => {
     if (!el) return;
-    el.width = 38;
-    el.height = NOTE_COUNT * zoomY;
+    const logicalW = 38;
+    const logicalH = NOTE_COUNT * zoomY;
+    el.width = Math.round(logicalW * DPR);
+    el.height = Math.round(logicalH * DPR);
+    el.style.width = logicalW + 'px';
+    el.style.height = logicalH + 'px';
     const ctx = el.getContext('2d');
-    ctx.clearRect(0, 0, 38, el.height);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, logicalW, logicalH);
     ctx.fillStyle = '#6a6a70';
     ctx.font = '9px monospace';
     for (let i = 0; i < NOTE_COUNT; i++) {
@@ -636,6 +660,14 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
         <button onClick={() => setZoomX(z => Math.min(300, z * 1.2))} title={t.zoomIn} style={{ padding: '2px 6px' }}><Icons.ZoomIn /></button>
         <button onClick={() => setZoomX(z => Math.max(20, z * 0.8))} title={t.zoomOut} style={{ padding: '2px 6px' }}><Icons.ZoomOut /></button>
         <button onClick={() => { offsetXRef.current = 0; offsetYRef.current = 0; setZoomX(80); setZoomY(20); }} title={t.resetView} style={{ padding: '2px 6px' }}><Icons.Reset /></button>
+        <button
+          onClick={() => setShowGhosts(s => !s)}
+          className={showGhosts ? 'active' : ''}
+          title={lang === 'zh' ? (showGhosts ? '隐藏其他轨道' : '显示其他轨道') : (showGhosts ? 'Hide other tracks' : 'Show other tracks')}
+          style={{ padding: '2px 6px', fontSize: '0.65rem' }}
+        >
+          Ghost
+        </button>
         <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
           {selectedNotes.length > 0 ? `${selectedNotes.length} ${lang === 'zh' ? '个音符' : ' notes'}` : ''}
         </span>

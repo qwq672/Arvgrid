@@ -279,7 +279,7 @@ export default function TrackPanel({
               {TRACK_COLORS.map(c => (
                 <div key={c} onClick={() => { onColorChange(ctxMenu.id, c); setCtxMenu(null); }} style={{
                   width: 18, height: 18, borderRadius: 4, background: c, cursor: 'pointer',
-                  border: tracks.find(t => t.id === ctxMenu.id)?.color === c ? '2px solid #fff' : '1px solid var(--border)',
+                  border: tracks.find(t => t.id === ctxMenu.id)?.color === c ? '2px solid var(--text)' : '1px solid var(--border)',
                 }} />
               ))}
             </div>

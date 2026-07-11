@@ -154,8 +154,8 @@ export default function MenuBar({
   return (
     <div className="menu-bar" ref={menuRef}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 8, flexShrink: 0 }}>
-        <img src="/icon.svg" alt="Arvgrid" style={{ width: 18, height: 18 }} />
-        <span style={{ fontWeight: 300, color: '#ffffff', fontSize: '0.85rem' }}>Arvgrid</span>
+        <img src="/icon.svg" alt="Arvgrid" style={{ width: 18, height: 18, filter: theme === 'light' ? 'invert(1)' : 'none' }} />
+        <span style={{ fontWeight: 300, color: 'var(--text)', fontSize: '0.85rem' }}>Arvgrid</span>
       </div>
 
       {/* 性能指示器 - 始终显示 */}
@@ -223,7 +223,7 @@ export default function MenuBar({
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onToggleMode, homeMode)}>{mode === 'desktop' ? t.touchMode : t.desktopMode}</a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onFullscreen, homeMode)}><Icons.Fullscreen /> {t.fullscreen}</a>
           <a onClick={() => { setActiveMenu(null); onThemeChange && onThemeChange(theme === 'dark' ? 'light' : 'dark'); }}>
-            {theme === 'dark' ? '🌙' : '☀️'} {lang === 'zh' ? (theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式') : (theme === 'dark' ? 'Switch to Light' : 'Switch to Dark')}
+            {theme === 'dark' ? <Icons.Sun /> : <Icons.Moon />} {lang === 'zh' ? (theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式') : (theme === 'dark' ? 'Switch to Light' : 'Switch to Dark')}
           </a>
         </div>}
       </div>

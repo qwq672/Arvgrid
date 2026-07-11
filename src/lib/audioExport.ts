@@ -3,14 +3,20 @@
 
 import type { ExportOptions, ExportProgress } from '../types/audio';
 
-// 动态导入 lamejs（MP3 编码器）
-let lamejs: any = null;
-const loadLamejs = async () => {
-  if (!lamejs) {
-    const module = await import('lamejs');
-    lamejs = module.default || module;
-  }
-  return lamejs;
+// 动态加载 lamejs MP3 编码器
+// lamejs npm 包的 src/js/index.js 使用 CommonJS require，Vite 的 CJS 转换
+// 会导致内部 MPEGMode 引用未定义。改用预打包的 lame.all.js（自包含，无 require）
+let _Mp3Encoder: any = null;
+const loadMp3Encoder = async () => {
+  if (_Mp3Encoder) return _Mp3Encoder;
+  // 以原始字符串导入，在沙箱中执行并提取 Mp3Encoder
+  const lameAllCode = (await import('lamejs/lame.all.js?raw')).default as string;
+  // lame.all.js 结构：function lamejs(){ ...定义... lamejs.Mp3Encoder=Mp3Encoder } lamejs();
+  const fn = new Function(`${lameAllCode}\nreturn lamejs;`);
+  const lamejsObj = fn();
+  _Mp3Encoder = lamejsObj.Mp3Encoder;
+  if (!_Mp3Encoder) throw new Error('Failed to load MP3 encoder');
+  return _Mp3Encoder;
 };
 
 /**
@@ -39,6 +45,49 @@ export async function renderAudioBuffer(
   // 创建离线 AudioContext
   const offlineCtx = new OfflineAudioContext(2, totalSamples, sampleRate);
 
+  // 预解析所有 preset 查找，避免每个音符都 O(n) 遍历 presets 数组
+  const presetCache = new Map<string, any>();
+  const findPreset = (program: number, isDrum: boolean): any => {
+    const key = `${program}_${isDrum}`;
+    let cached = presetCache.get(key);
+    if (cached !== undefined) return cached;
+    if (isDrum) {
+      cached = sf2Data.presets.find((p: any) => p.program === program && p.bank === 128)
+            || sf2Data.presets.find((p: any) => p.bank === 128)
+            || sf2Data.presets.find((p: any) => p.program === program);
+    } else {
+      cached = sf2Data.presets.find((p: any) => p.program === program && p.bank === 0)
+            || sf2Data.presets.find((p: any) => p.program === program && p.bank !== 128)
+            || sf2Data.presets.find((p: any) => p.program === program)
+            || sf2Data.presets[0];
+    }
+    presetCache.set(key, cached || null);
+    return cached;
+  };
+
+  // 预创建所有需要的 AudioBuffer，避免在音符循环中阻塞
+  const preparedSamples = new Set<any>();
+  const prepareSampleBuffer = (sample: any) => {
+    if (!sample || preparedSamples.has(sample)) return;
+    preparedSamples.add(sample);
+    if (!sample.audioBuffer && sample.pcmData) {
+      try {
+        const length = sample.pcmData.length;
+        const audioBuffer = offlineCtx.createBuffer(1, length, sample.sampleRate);
+        const channelData = audioBuffer.getChannelData(0);
+        const pcm = sample.pcmData;
+        const scale = 1 / 32768;
+        for (let i = 0; i < length; i++) {
+          channelData[i] = pcm[i] * scale;
+        }
+        sample.audioBuffer = audioBuffer;
+        sample.pcmData = null;
+      } catch (e) {
+        // 静默失败
+      }
+    }
+  };
+
   // 收集所有音符事件
   const events: any[] = [];
   tracks.forEach(track => {
@@ -56,8 +105,43 @@ export async function renderAudioBuffer(
   });
   events.sort((a, b) => a.time - b.time);
 
-  // 渲染每个音符
+  // 第一遍：预创建所有需要的 AudioBuffer（分批进行，不阻塞 UI）
+  if (sf2Data && sf2Data.presets) {
+    const samplesToPrepare: any[] = [];
+    for (const event of events) {
+      const preset = findPreset(event.program, event.isDrum);
+      if (!preset || !preset.sampleIndex) continue;
+      const midi = noteToMidi(event.pitch);
+      let sample = preset.sampleIndex[midi];
+      if (!sample) {
+        for (let off = 1; off <= 5; off++) {
+          sample = preset.sampleIndex[midi + off] || preset.sampleIndex[midi - off];
+          if (sample) break;
+        }
+      }
+      if (!sample) sample = preset.sampleIndex[60];
+      if (sample && !preparedSamples.has(sample)) {
+        samplesToPrepare.push(sample);
+        preparedSamples.add(sample);
+      }
+    }
+    // 分批创建 AudioBuffer，每批 20 个后让出主线程
+    for (let i = 0; i < samplesToPrepare.length; i++) {
+      prepareSampleBuffer(samplesToPrepare[i]);
+      if (onProgress && (i + 1) % 20 === 0) {
+        onProgress({
+          current: i + 1,
+          total: samplesToPrepare.length + events.length,
+          stage: 'rendering',
+        });
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  }
+
+  // 第二遍：调度所有音符
   const totalEvents = events.length;
+  const renderBase = preparedSamples.size;
   let processedEvents = 0;
 
   for (const event of events) {
@@ -66,90 +150,55 @@ export async function renderAudioBuffer(
     const velocity = event.velocity;
     const program = event.program;
 
-    // 尝试使用 SF2 样本 - 使用 sampleIndex 进行 O(1) 查找
     if (sf2Data && sf2Data.presets) {
       const isDrum = event.isDrum;
-      let preset: any;
-      if (isDrum) {
-        preset = sf2Data.presets.find((p: any) => p.program === program && p.bank === 128)
-              || sf2Data.presets.find((p: any) => p.bank === 128)
-              || sf2Data.presets.find((p: any) => p.program === program);
-      } else {
-        preset = sf2Data.presets.find((p: any) => p.program === program && p.bank === 0)
-              || sf2Data.presets.find((p: any) => p.program === program && p.bank !== 128)
-              || sf2Data.presets.find((p: any) => p.program === program)
-              || sf2Data.presets[0];
-      }
+      const preset = findPreset(program, isDrum);
       if (preset && preset.sampleIndex) {
         const midi = noteToMidi(event.pitch);
         const vol = (velocity / 127) * 0.12;
 
         let bestSample = preset.sampleIndex[midi];
-
         if (!bestSample) {
           for (let offset = 1; offset <= 5; offset++) {
             bestSample = preset.sampleIndex[midi + offset] || preset.sampleIndex[midi - offset];
             if (bestSample) break;
           }
         }
+        if (!bestSample) bestSample = preset.sampleIndex[60];
 
-        if (!bestSample) {
-          bestSample = preset.sampleIndex[60];
-        }
+        if (bestSample && bestSample.audioBuffer) {
+          const source = offlineCtx.createBufferSource();
+          source.buffer = bestSample.audioBuffer;
 
-        if (bestSample) {
-          if (!bestSample.audioBuffer && bestSample.pcmData) {
-            try {
-              const length = bestSample.pcmData.length;
-              const audioBuffer = offlineCtx.createBuffer(1, length, bestSample.sampleRate);
-              const channelData = audioBuffer.getChannelData(0);
-              const float32 = new Float32Array(length);
-              const pcm = bestSample.pcmData;
-              for (let i = 0; i < length; i++) {
-                float32[i] = pcm[i] * (1 / 32768);
-              }
-              channelData.set(float32);
-              bestSample.audioBuffer = audioBuffer;
-              bestSample.pcmData = null; // 释放 PCM 数据
-            } catch (e) {
-              // 静默失败，跳过此音符
-            }
-          }
+          const rootKey = bestSample.rootKey || 60;
+          const coarseTune = bestSample.coarseTune || 0;
+          const fineTune = bestSample.fineTune || 0;
+          const pitchCorrection = bestSample.pitchCorrection || 0;
+          const semitoneOffset = (midi - rootKey) + coarseTune + (fineTune / 100) + (pitchCorrection / 100);
+          const playbackRate = Math.pow(2, semitoneOffset / 12);
+          source.playbackRate.value = playbackRate;
 
-          if (bestSample.audioBuffer) {
-            const source = offlineCtx.createBufferSource();
-            source.buffer = bestSample.audioBuffer;
+          const gain = offlineCtx.createGain();
+          gain.gain.setValueAtTime(0.0001, whenSec);
+          gain.gain.setTargetAtTime(vol, whenSec, 0.020);
+          gain.gain.setValueAtTime(vol, whenSec + duration - 0.002);
+          gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.080);
 
-            const rootKey = bestSample.rootKey || 60;
-            const coarseTune = bestSample.coarseTune || 0;
-            const fineTune = bestSample.fineTune || 0;
-            const pitchCorrection = bestSample.pitchCorrection || 0;
-            const semitoneOffset = (midi - rootKey) + coarseTune + (fineTune / 100) + (pitchCorrection / 100);
-            const playbackRate = Math.pow(2, semitoneOffset / 12);
-            source.playbackRate.value = playbackRate;
+          source.connect(gain);
+          gain.connect(offlineCtx.destination);
 
-            const gain = offlineCtx.createGain();
-            gain.gain.setValueAtTime(0.0001, whenSec);
-            gain.gain.setTargetAtTime(vol, whenSec, 0.020);
-            gain.gain.setValueAtTime(vol, whenSec + duration - 0.002);
-            gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.080);
-
-            source.connect(gain);
-            gain.connect(offlineCtx.destination);
-
-            source.start(whenSec);
-            source.stop(whenSec + duration + 0.1);
-          }
+          source.start(whenSec);
+          source.stop(whenSec + duration + 0.1);
         }
       }
     }
 
     processedEvents++;
-    // 每 50 个音符让出主线程，允许 UI 更新进度
-    if (onProgress && processedEvents % 50 === 0) {
+    // 每 200 个音符让出主线程（减少 setTimeout 开销）
+    if (onProgress && processedEvents % 200 === 0) {
       onProgress({
-        current: processedEvents,
-        total: totalEvents,
+        current: renderBase + processedEvents,
+        total: renderBase + totalEvents,
         stage: 'rendering',
       });
       await new Promise(r => setTimeout(r, 0));
@@ -158,7 +207,7 @@ export async function renderAudioBuffer(
 
   // 通知 UI 进入最终合成阶段（offlineCtx.startRendering 可能耗时较长）
   if (onProgress) {
-    onProgress({ current: totalEvents, total: totalEvents, stage: 'finalizing' });
+    onProgress({ current: renderBase + totalEvents, total: renderBase + totalEvents, stage: 'finalizing' });
     await new Promise(r => setTimeout(r, 0));
   }
 
@@ -245,11 +294,11 @@ export async function exportToMp3(
   bitrate: number = 192,
   onProgress?: (progress: ExportProgress) => void
 ): Promise<Blob> {
-  const lame = await loadLamejs();
+  const Mp3Encoder = await loadMp3Encoder();
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
-  
-  const mp3encoder = new lame.Mp3Encoder(numChannels, sampleRate, bitrate);
+
+  const mp3encoder = new Mp3Encoder(numChannels, sampleRate, bitrate);
   const mp3Data: Uint8Array[] = [];
 
   const left = audioBuffer.getChannelData(0);
@@ -258,39 +307,44 @@ export async function exportToMp3(
   const sampleBlockSize = 1152;
   const totalBlocks = Math.ceil(left.length / sampleBlockSize);
 
+  // 复用 Int16Array 缓冲区，避免每个块都分配新内存
+  const leftInt16 = new Int16Array(sampleBlockSize);
+  const rightInt16 = new Int16Array(sampleBlockSize);
+
+  let blockIndex = 0;
   for (let i = 0; i < left.length; i += sampleBlockSize) {
-    const leftChunk = left.slice(i, i + sampleBlockSize);
-    const rightChunk = right.slice(i, i + sampleBlockSize);
+    const remaining = Math.min(sampleBlockSize, left.length - i);
+    // 就地转换 Float32 → Int16，避免 slice 和额外分配
+    for (let j = 0; j < remaining; j++) {
+      const l = left[i + j];
+      const r = right[i + j];
+      leftInt16[j] = l < 0 ? l * 0x8000 : l * 0x7FFF;
+      rightInt16[j] = r < 0 ? r * 0x8000 : r * 0x7FFF;
+    }
+    // 如果最后一块不足 sampleBlockSize，用子数组传入
+    const lBuf = remaining < sampleBlockSize ? leftInt16.subarray(0, remaining) : leftInt16;
+    const rBuf = remaining < sampleBlockSize ? rightInt16.subarray(0, remaining) : rightInt16;
 
-    const leftInt16 = floatTo16BitPCM(leftChunk);
-    const rightInt16 = floatTo16BitPCM(rightChunk);
-
-    const mp3buf = mp3encoder.encodeBuffer(leftInt16, rightInt16);
+    const mp3buf = mp3encoder.encodeBuffer(lBuf, rBuf);
     if (mp3buf.length > 0) {
-      mp3Data.push(mp3buf);
+      mp3Data.push(new Uint8Array(mp3buf));
     }
 
-    if (onProgress) {
-      const currentBlock = Math.floor(i / sampleBlockSize);
-      onProgress({
-        current: currentBlock,
-        total: totalBlocks,
-        stage: 'encoding',
-      });
+    blockIndex++;
+    // 每 100 块更新一次进度并让出主线程，避免 UI 冻结
+    if (onProgress && blockIndex % 100 === 0) {
+      onProgress({ current: blockIndex, total: totalBlocks, stage: 'encoding' });
+      await new Promise(r => setTimeout(r, 0));
     }
   }
 
   const end = mp3encoder.flush();
   if (end.length > 0) {
-    mp3Data.push(end);
+    mp3Data.push(new Uint8Array(end));
   }
 
   if (onProgress) {
-    onProgress({
-      current: totalBlocks,
-      total: totalBlocks,
-      stage: 'encoding',
-    });
+    onProgress({ current: totalBlocks, total: totalBlocks, stage: 'encoding' });
   }
 
   return new Blob(mp3Data as BlobPart[], { type: 'audio/mp3' });
@@ -439,15 +493,6 @@ function writeString(view: DataView, offset: number, string: string): void {
   for (let i = 0; i < string.length; i++) {
     view.setUint8(offset + i, string.charCodeAt(i));
   }
-}
-
-function floatTo16BitPCM(input: Float32Array): Int16Array {
-  const output = new Int16Array(input.length);
-  for (let i = 0; i < input.length; i++) {
-    const s = Math.max(-1, Math.min(1, input[i]));
-    output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-  }
-  return output;
 }
 
 function noteToMidi(pitch: string): number {

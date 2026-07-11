@@ -114,13 +114,13 @@ export default function Transport({
     <div className="controls-bar" style={{ padding: '6px 10px', display: 'flex', gap: 8, alignItems: 'center', borderTop: '1px solid var(--border)', flexShrink: 0, background: 'var(--panel)', flexWrap: 'wrap', overflow: 'hidden', minHeight: 48 }}>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
         {!isPlaying ? (
-          <button onClick={onPlay}>{Icons.Play ? <Icons.Play /> : '▶'}</button>
+          <button onClick={onPlay} className="transport-play"><Icons.Play /></button>
         ) : isPaused ? (
-          <button onClick={onResume}>{Icons.Play ? <Icons.Play /> : '▶'}</button>
+          <button onClick={onResume} className="transport-play"><Icons.Play /></button>
         ) : (
-          <button onClick={onPause}>{Icons.Pause ? <Icons.Pause /> : '⏸'}</button>
+          <button onClick={onPause}><Icons.Pause /></button>
         )}
-        <button onClick={onStop} disabled={!isPlaying}>{Icons.Stop ? <Icons.Stop /> : '⏹'}</button>
+        <button onClick={onStop} disabled={!isPlaying} className="transport-stop"><Icons.Stop /></button>
         <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <input type="checkbox" checked={metronomeOn} onChange={(e) => onMetronomeOnChange(e.target.checked)} />
           {t.metronome || '节拍器'}
@@ -129,7 +129,7 @@ export default function Transport({
         <input type="number" value={bpm} onChange={(e) => onBpmChange(parseInt(e.target.value))} style={{ width: '70px' }} />
       </div>
       <div style={{ display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>
-        <span style={{ fontSize: '0.75rem' }} title={t.volume || '音量'}>🔊</span>
+        <Icons.Volume />
         <input
           type="range"
           min="0"

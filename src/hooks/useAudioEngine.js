@@ -6,6 +6,11 @@ import { parseSF2 } from '../lib/sf2Parser';
 const MAX_POLYPHONY = 32; // 复音数上限
 const MIN_POLYPHONY = 12; // 自适应降级下限
 
+// 检测设备 CPU 核心数，用于初始化复音数
+const CPU_CORES = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+const INITIAL_POLYPHONY = CPU_CORES <= 2 ? 16 : CPU_CORES <= 4 ? 24 : MAX_POLYPHONY;
+const LOW_END_MIN_POLYPHONY = CPU_CORES <= 2 ? 8 : MIN_POLYPHONY;
+
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
 // 更大的 lookahead 和更短的 interval 可以减少卡顿
 const BUFFER_PRESETS = {
@@ -54,10 +59,13 @@ export function useAudioEngine() {
   const [metronomeOn, setMetronomeOn] = useState(false);
   const metronomeOnRef = useRef(false);
   const bpmRef = useRef(120);
-  const [bufferSize, setBufferSizeState] = useState('medium');
-  const bufferSizeRef = useRef('medium');
-  const lookaheadRef = useRef(0.15);
-  const schedulerMsRef = useRef(25);
+  // 低配设备（2核）自动使用更大的缓冲区以减少卡顿
+  const initialBufferPreset = CPU_CORES <= 2 ? 'long' : 'medium';
+  const initialBufferValues = BUFFER_PRESETS[initialBufferPreset];
+  const [bufferSize, setBufferSizeState] = useState(initialBufferPreset);
+  const bufferSizeRef = useRef(initialBufferPreset);
+  const lookaheadRef = useRef(initialBufferValues[0]);
+  const schedulerMsRef = useRef(initialBufferValues[1]);
   const scheduledTimeoutsRef = useRef([]);
   const eventsRef = useRef([]);
   const nextEventIndexRef = useRef(0);
@@ -67,7 +75,8 @@ export function useAudioEngine() {
   const [performanceInfo, setPerformanceInfo] = useState({ level: 'low', mem: 0 });
   const schedulerLagCountRef = useRef(0);
   const lastPerfUpdateRef = useRef(0); // 节流性能更新
-  const adaptivePolyphonyRef = useRef(MAX_POLYPHONY); // 自适应复音数
+  const adaptivePolyphonyRef = useRef(INITIAL_POLYPHONY); // 自适应复音数（根据 CPU 核心数初始化）
+  const noteBusRef = useRef(null); // 共享音符总线，减少每个音符的连接数
 
   useEffect(() => { soundSourceRef.current = soundSource; }, [soundSource]);
   useEffect(() => { metronomeOnRef.current = metronomeOn; }, [metronomeOn]);
@@ -150,6 +159,15 @@ export function useAudioEngine() {
     dryGainNode.gain.value = 1.0;
     dryGainNode.connect(dry);
     dryGainNodeRef.current = dryGainNode;
+
+    // 共享音符总线：所有音符连接到此处（1连接/音符），
+    // 再由总线统一连接到 dry/reverb/delay（3连接总计），大幅减少音频图节点连接数
+    const noteBus = ctx.createGain();
+    noteBus.gain.value = 1.0;
+    noteBus.connect(dryGainNode);
+    noteBus.connect(reverbSendGain);
+    noteBus.connect(delaySendGain);
+    noteBusRef.current = noteBus;
 
     return ctx;
   }, []);
@@ -261,9 +279,7 @@ export function useAudioEngine() {
     allNodes.push(filter);
 
     masterGain.connect(filter);
-    filter.connect(dryGainNodeRef.current);
-    filter.connect(reverbSendGainRef.current);
-    filter.connect(delaySendGainRef.current);
+    filter.connect(noteBusRef.current);
 
     const stopTime = whenSec + totalDuration;
     oscillators.forEach(osc => {
@@ -297,8 +313,7 @@ export function useAudioEngine() {
       gain.gain.setTargetAtTime(0.0001, whenSec + decay + release, tc);
       source.connect(hpf);
       hpf.connect(gain);
-      gain.connect(dryGainNodeRef.current);
-      gain.connect(reverbSendGainRef.current);
+      gain.connect(noteBusRef.current);
       source.start(whenSec);
       const stopT = whenSec + decay + release + 0.05;
       source.stop(stopT);
@@ -320,8 +335,7 @@ export function useAudioEngine() {
       gain.gain.setTargetAtTime(0.0001, whenSec + decay + release + 0.1, tc);
       noiseSource.connect(bpf);
       bpf.connect(gain);
-      gain.connect(dryGainNodeRef.current);
-      gain.connect(reverbSendGainRef.current);
+      gain.connect(noteBusRef.current);
       const stopT = whenSec + decay + release + 0.2;
       noiseSource.start(whenSec);
       noiseSource.stop(stopT);
@@ -337,7 +351,7 @@ export function useAudioEngine() {
         oscGain.gain.setTargetAtTime(safeVol * 0.1, whenSec + attack, tc);
         oscGain.gain.setTargetAtTime(0.0001, whenSec + release + 0.1, tc);
         osc.connect(oscGain);
-        oscGain.connect(dryGainNodeRef.current);
+        oscGain.connect(noteBusRef.current);
         osc.start(whenSec);
         osc.stop(whenSec + release + 0.2);
         oscillators.push(osc);
@@ -359,8 +373,7 @@ export function useAudioEngine() {
     noiseGain.gain.setTargetAtTime(0.0001, whenSec + decay + 0.02, tc);
     noiseSource.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
-    noiseGain.connect(dryGainNodeRef.current);
-    noiseGain.connect(reverbSendGainRef.current);
+    noiseGain.connect(noteBusRef.current);
     noiseSource.start(whenSec);
     noiseSource.stop(whenSec + decay + 0.1);
     sources.push(noiseSource);
@@ -376,8 +389,7 @@ export function useAudioEngine() {
     bodyGain.gain.setTargetAtTime(safeVol * 0.5, whenSec + attack, tc);
     bodyGain.gain.setTargetAtTime(0.0001, whenSec + decay + release + 0.05, tc);
     osc.connect(bodyGain);
-    bodyGain.connect(dryGainNodeRef.current);
-    bodyGain.connect(reverbSendGainRef.current);
+    bodyGain.connect(noteBusRef.current);
     const stopT = whenSec + decay + release + 0.1;
     osc.start(whenSec);
     osc.stop(stopT);
@@ -472,16 +484,20 @@ export function useAudioEngine() {
     source.playbackRate.value = playbackRate;
 
     const gain = ctx.createGain();
-    // 增加包络时间防止爆音：20ms attack, 2ms crossfade 防止爆音, 80ms release
-    gain.gain.setValueAtTime(0.0001, whenSec);
-    gain.gain.setTargetAtTime(vol, whenSec, 0.020);
-    gain.gain.setValueAtTime(vol, whenSec + duration - 0.002);
-    gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.080);
+    // 包络：20ms attack, 80ms release；鼓组使用更短的包络减少 CPU 开销
+    if (isDrum) {
+      gain.gain.setValueAtTime(vol, whenSec);
+      gain.gain.exponentialRampToValueAtTime(0.0001, whenSec + Math.min(duration, 0.5));
+    } else {
+      gain.gain.setValueAtTime(0.0001, whenSec);
+      gain.gain.setTargetAtTime(vol, whenSec, 0.020);
+      gain.gain.setValueAtTime(vol, whenSec + duration - 0.002);
+      gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.080);
+    }
 
     source.connect(gain);
-    gain.connect(dryGainNodeRef.current);
-    gain.connect(reverbSendGainRef.current);
-    gain.connect(delaySendGainRef.current);
+    // 连接到共享音符总线（1连接代替3连接，大幅减少音频图复杂度）
+    gain.connect(noteBusRef.current);
 
     const stopT = whenSec + duration + 0.1;
     source.start(whenSec);
@@ -572,10 +588,10 @@ export function useAudioEngine() {
       if (schedulerLag > 0.15) {
         level = 'critical';
         // 自适应降级：严重延迟时减少复音数
-        adaptivePolyphonyRef.current = Math.max(MIN_POLYPHONY, adaptivePolyphonyRef.current - 4);
+        adaptivePolyphonyRef.current = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 4);
       } else if (schedulerLag > 0.05) {
         level = 'warn';
-        adaptivePolyphonyRef.current = Math.max(MIN_POLYPHONY, adaptivePolyphonyRef.current - 2);
+        adaptivePolyphonyRef.current = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 2);
       } else if (schedulerLag > 0.001) {
         level = 'normal';
       } else {

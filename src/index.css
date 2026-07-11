@@ -60,9 +60,10 @@ body {
   user-select: none;
 }
 
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: var(--border); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--accent-hover); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 button {
   background: var(--button-bg);
@@ -75,14 +76,23 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  transition: background 0.12s;
+  transition: background 0.12s, transform 0.06s, box-shadow 0.12s;
   white-space: nowrap;
 }
 button:hover { background: var(--accent-hover); }
-button:active { background: var(--accent-active); }
+button:active { background: var(--accent-active); transform: scale(0.96); }
+button:disabled { opacity: 0.4; cursor: default; transform: none; }
 
 button.primary { background: var(--accent-hover); }
 button.primary:hover { background: var(--accent-active); }
+
+button.transport-play { background: #2a6fc4; color: #fff; box-shadow: 0 1px 3px rgba(42,111,196,0.4); }
+button.transport-play:hover { background: #3a7fd4; box-shadow: 0 2px 6px rgba(42,111,196,0.5); }
+button.transport-play:active { background: #1a5fb4; transform: scale(0.94); }
+button.transport-stop { background: #c44040; color: #fff; box-shadow: 0 1px 3px rgba(196,64,64,0.4); }
+button.transport-stop:hover { background: #d45050; box-shadow: 0 2px 6px rgba(196,64,64,0.5); }
+button.transport-stop:active { background: #b43030; transform: scale(0.94); }
+button.transport-stop:disabled { background: var(--button-bg); color: var(--text-muted); opacity: 0.4; box-shadow: none; transform: none; }
 
 button.active { background: var(--accent-active); outline: 1px solid var(--text-muted); }
 
@@ -98,24 +108,43 @@ input, select, textarea {
   font-size: 0.75rem;
   outline: none;
 }
-input:focus, select:focus { border-color: var(--text-muted); }
+input:focus, select:focus { border-color: var(--text-muted); box-shadow: 0 0 0 2px rgba(106,106,112,0.15); }
 
 input[type="range"] {
   padding: 0;
   border: none;
-  height: 4px;
+  height: 5px;
   background: var(--border);
-  border-radius: 2px;
+  border-radius: 3px;
   -webkit-appearance: none;
   appearance: none;
+  cursor: pointer;
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  background: var(--text-muted);
-  width: 12px;
-  height: 12px;
+  background: var(--accent-hover);
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   cursor: pointer;
+  transition: background 0.12s, transform 0.06s;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: var(--text);
+  transform: scale(1.15);
+}
+input[type="range"]::-moz-range-thumb {
+  background: var(--accent-hover);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  transition: background 0.12s, transform 0.06s;
+}
+input[type="range"]::-moz-range-thumb:hover {
+  background: var(--text);
+  transform: scale(1.15);
 }
 
 input[type="checkbox"] { accent-color: var(--text-muted); }
@@ -149,8 +178,9 @@ input[type="radio"] { accent-color: var(--text-muted); }
   padding-bottom: 8px;
 }
 
-.progress-bar { flex: 1; height: 5px; background: var(--border); border-radius: 3px; cursor: pointer; position: relative; }
-.progress-fill { height: 100%; background: var(--accent-hover); border-radius: 3px; }
+.progress-bar { flex: 1; height: 6px; background: var(--border); border-radius: 3px; cursor: pointer; position: relative; transition: height 0.12s; }
+.progress-bar:hover { height: 8px; }
+.progress-fill { height: 100%; background: var(--accent-hover); border-radius: 3px; transition: width 0.05s linear; }
 
 .menu-bar {
   background: var(--panel);
@@ -172,6 +202,7 @@ input[type="radio"] { accent-color: var(--text-muted); }
   font-size: 0.78rem;
   border-radius: 4px;
   white-space: nowrap;
+  transition: background 0.1s;
 }
 .menu-item:hover { background: var(--accent-hover); }
 .menu-item.active { background: var(--accent-active); }
@@ -180,14 +211,15 @@ input[type="radio"] { accent-color: var(--text-muted); }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  min-width: 140px;
+  min-width: 160px;
   z-index: 1000;
   display: none;
   flex-direction: column;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+  padding: 4px;
 }
 .menu-dropdown a {
-  padding: 6px 14px;
+  padding: 7px 12px;
   cursor: pointer;
   font-size: 0.75rem;
   white-space: nowrap;
@@ -195,7 +227,9 @@ input[type="radio"] { accent-color: var(--text-muted); }
   color: var(--text);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  border-radius: 4px;
+  transition: background 0.1s;
 }
 .menu-dropdown a:hover { background: var(--accent-hover); }
 .menu-item.active .menu-dropdown { display: flex; }
