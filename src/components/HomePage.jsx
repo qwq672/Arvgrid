@@ -4,10 +4,11 @@ import { useTranslation } from '../lib/i18n';
 import MenuBar from './MenuBar';
 import SettingsModal from './SettingsModal';
 
-export default function HomePage({ 
-  onNewProject, onImportMidi, onImportProject, onLoadRecent, recentProjects, onClearRecent, 
+export default function HomePage({
+  onNewProject, onImportMidi, onImportProject, onLoadRecent, recentProjects, onClearRecent,
   lang = 'zh', onLangChange, onLoadSF2, sf2Loaded, sf2Name,
   uiScale, onUiScaleChange, onClearCache, onResetSettings,
+  theme = 'dark', onThemeChange,
   pendingAutosave, onRecoverAutosave, onDiscardAutosave
 }) {
   const t = useTranslation(lang);
@@ -28,6 +29,8 @@ export default function HomePage({
         onLoadProject={onImportProject}
         onOpenSettings={() => setSettingsOpen(true)}
         lang={lang}
+        theme={theme}
+        onThemeChange={onThemeChange}
       />
       
       <div style={{

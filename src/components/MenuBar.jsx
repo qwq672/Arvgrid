@@ -7,6 +7,8 @@ export default function MenuBar({
   onOpenMidiInfo, onUndo, onRedo, onQuantize, onClearTrack,
   onOpenSettings, onToggleMode, onFullscreen, mode, onExitToHome,
   lang = 'zh',
+  theme = 'dark',
+  onThemeChange = null,
   homeMode = false,
   analyserNodeRef = null,
   editMode = 'pointer',
@@ -220,6 +222,9 @@ export default function MenuBar({
           <a onClick={() => handleItemClick(onOpenSettings)}><Icons.Settings /> {t.optionsPanel}</a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onToggleMode, homeMode)}>{mode === 'desktop' ? t.touchMode : t.desktopMode}</a>
           <a style={homeMode ? disabledStyle : {}} onClick={() => handleItemClick(onFullscreen, homeMode)}><Icons.Fullscreen /> {t.fullscreen}</a>
+          <a onClick={() => { setActiveMenu(null); onThemeChange && onThemeChange(theme === 'dark' ? 'light' : 'dark'); }}>
+            {theme === 'dark' ? '🌙' : '☀️'} {lang === 'zh' ? (theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式') : (theme === 'dark' ? 'Switch to Light' : 'Switch to Dark')}
+          </a>
         </div>}
       </div>
 

@@ -33,7 +33,7 @@ export async function renderAudioBuffer(
   });
 
   const totalDuration = maxTime + 1; // 加 1 秒余音
-  const sampleRate = 44100;
+  const sampleRate = parseInt(localStorage.getItem('arvgrid_export_sample_rate') || '44100');
   const totalSamples = Math.ceil(totalDuration * sampleRate);
 
   // 创建离线 AudioContext
@@ -50,6 +50,7 @@ export async function renderAudioBuffer(
         pitch: note.pitch,
         velocity: note.velocity,
         program: track.program,
+        isDrum: (track as any).isDrum || false,
       });
     });
   });
@@ -67,10 +68,18 @@ export async function renderAudioBuffer(
 
     // 尝试使用 SF2 样本 - 使用 sampleIndex 进行 O(1) 查找
     if (sf2Data && sf2Data.presets) {
-      // 优先匹配 bank 0（旋律乐器），避免误选鼓组（bank 128）
-      const preset = sf2Data.presets.find((p: any) => p.program === program && p.bank === 0)
-                  || sf2Data.presets.find((p: any) => p.program === program)
-                  || sf2Data.presets[0];
+      const isDrum = event.isDrum;
+      let preset: any;
+      if (isDrum) {
+        preset = sf2Data.presets.find((p: any) => p.program === program && p.bank === 128)
+              || sf2Data.presets.find((p: any) => p.bank === 128)
+              || sf2Data.presets.find((p: any) => p.program === program);
+      } else {
+        preset = sf2Data.presets.find((p: any) => p.program === program && p.bank === 0)
+              || sf2Data.presets.find((p: any) => p.program === program && p.bank !== 128)
+              || sf2Data.presets.find((p: any) => p.program === program)
+              || sf2Data.presets[0];
+      }
       if (preset && preset.sampleIndex) {
         const midi = noteToMidi(event.pitch);
         const vol = (velocity / 127) * 0.12;
@@ -94,11 +103,14 @@ export async function renderAudioBuffer(
               const length = bestSample.pcmData.length;
               const audioBuffer = offlineCtx.createBuffer(1, length, bestSample.sampleRate);
               const channelData = audioBuffer.getChannelData(0);
+              const float32 = new Float32Array(length);
               const pcm = bestSample.pcmData;
               for (let i = 0; i < length; i++) {
-                channelData[i] = pcm[i] / 32768;
+                float32[i] = pcm[i] * (1 / 32768);
               }
+              channelData.set(float32);
               bestSample.audioBuffer = audioBuffer;
+              bestSample.pcmData = null; // 释放 PCM 数据
             } catch (e) {
               // 静默失败，跳过此音符
             }
@@ -107,12 +119,13 @@ export async function renderAudioBuffer(
           if (bestSample.audioBuffer) {
             const source = offlineCtx.createBufferSource();
             source.buffer = bestSample.audioBuffer;
-            const rootKey = bestSample.rootKey || 60;
 
-            let playbackRate = Math.pow(2, (midi - rootKey) / 12);
-            if (bestSample.pitchCorrection) {
-              playbackRate *= Math.pow(2, bestSample.pitchCorrection / 1200);
-            }
+            const rootKey = bestSample.rootKey || 60;
+            const coarseTune = bestSample.coarseTune || 0;
+            const fineTune = bestSample.fineTune || 0;
+            const pitchCorrection = bestSample.pitchCorrection || 0;
+            const semitoneOffset = (midi - rootKey) + coarseTune + (fineTune / 100) + (pitchCorrection / 100);
+            const playbackRate = Math.pow(2, semitoneOffset / 12);
             source.playbackRate.value = playbackRate;
 
             const gain = offlineCtx.createGain();
@@ -143,22 +156,14 @@ export async function renderAudioBuffer(
     }
   }
 
-  // 通知 UI 即将开始渲染
+  // 通知 UI 进入最终合成阶段（offlineCtx.startRendering 可能耗时较长）
   if (onProgress) {
-    onProgress({ current: totalEvents, total: totalEvents, stage: 'rendering' });
+    onProgress({ current: totalEvents, total: totalEvents, stage: 'finalizing' });
     await new Promise(r => setTimeout(r, 0));
   }
 
   // 渲染音频
   const renderedBuffer = await offlineCtx.startRendering();
-  
-  if (onProgress) {
-    onProgress({
-      current: totalEvents,
-      total: totalEvents,
-      stage: 'rendering',
-    });
-  }
 
   return renderedBuffer;
 }
@@ -169,10 +174,14 @@ export async function renderAudioBuffer(
 export function exportToWav(audioBuffer: AudioBuffer): Blob {
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
-  const format = 1; // PCM
-  const bitDepth = 16;
+  const bitDepth = parseInt(localStorage.getItem('arvgrid_export_bit_depth') || '16');
 
-  const bytesPerSample = bitDepth / 8;
+  let format = 1; // PCM
+  let bytesPerSample = bitDepth / 8;
+  if (bitDepth === 32) {
+    format = 3; // IEEE float
+    bytesPerSample = 4;
+  }
   const blockAlign = numChannels * bytesPerSample;
   const dataSize = audioBuffer.length * blockAlign;
   const bufferSize = 44 + dataSize;
@@ -205,9 +214,23 @@ export function exportToWav(audioBuffer: AudioBuffer): Blob {
   for (let i = 0; i < audioBuffer.length; i++) {
     for (let channel = 0; channel < numChannels; channel++) {
       const sample = Math.max(-1, Math.min(1, channels[channel][i]));
-      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-      view.setInt16(offset, intSample, true);
-      offset += 2;
+      if (bitDepth === 8) {
+        view.setUint8(offset, Math.round((sample + 1) * 127.5));
+        offset += 1;
+      } else if (bitDepth === 16) {
+        const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(offset, intSample, true);
+        offset += 2;
+      } else if (bitDepth === 24) {
+        const intSample = Math.round(sample < 0 ? sample * 0x800000 : sample * 0x7FFFFF);
+        view.setUint8(offset, intSample & 0xFF);
+        view.setUint8(offset + 1, (intSample >> 8) & 0xFF);
+        view.setUint8(offset + 2, (intSample >> 16) & 0xFF);
+        offset += 3;
+      } else if (bitDepth === 32) {
+        view.setFloat32(offset, sample, true);
+        offset += 4;
+      }
     }
   }
 
@@ -377,19 +400,37 @@ export async function exportAudio(
   // 渲染音频缓冲区
   const audioBuffer = await renderAudioBuffer(tracks, bpm, sf2Data, onProgress);
 
+  // 通知 UI 进入编码阶段
+  if (onProgress) {
+    onProgress({ current: 0, total: 1, stage: 'encoding' });
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  let blob: Blob;
   // 根据格式导出
   switch (options.format) {
     case 'wav':
-      return exportToWav(audioBuffer);
+      blob = exportToWav(audioBuffer);
+      break;
     case 'mp3':
-      return exportToMp3(audioBuffer, options.bitrate || 192, onProgress);
+      blob = await exportToMp3(audioBuffer, options.bitrate || 192, onProgress);
+      break;
     case 'flac':
-      return exportToFlac(audioBuffer);
+      blob = exportToFlac(audioBuffer);
+      break;
     case 'aac':
-      return exportToAac(audioBuffer);
+      blob = await exportToAac(audioBuffer);
+      break;
     default:
       throw new Error(`Unsupported format: ${options.format}`);
   }
+
+  // 通知 UI 完成
+  if (onProgress) {
+    onProgress({ current: 1, total: 1, stage: 'complete' });
+  }
+
+  return blob;
 }
 
 // 辅助函数

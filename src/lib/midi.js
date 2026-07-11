@@ -199,7 +199,8 @@ export async function parseMidiFile(arrayBuffer) {
 
   // 第二遍：按 channel 分组音符，应用 program change
   // 每个 MIDI track 可能包含多个 channel，每个 channel 有不同的乐器
-  const channelTracks = new Map(); // key: `${trackIdx}_${channel}`, value: { name, program, notes, channel }
+  // MIDI channel 10 (0-indexed: 9) 是标准鼓组通道
+  const channelTracks = new Map(); // key: `${trackIdx}_${channel}`, value: { name, program, notes, isDrum }
 
   for (let t = 0; t < trackEvents.length; t++) {
     const { name, events } = trackEvents[t];
@@ -225,9 +226,11 @@ export async function parseMidiFile(arrayBuffer) {
               const prog = channelPrograms.get(ev.channel) || 0;
               const trackKey = `${t}_${ev.channel}`;
               if (!channelTracks.has(trackKey)) {
+                const isDrum = ev.channel === 9;
                 channelTracks.set(trackKey, {
-                  name: name || getInstrumentName(prog),
+                  name: name || (isDrum ? 'Drums' : getInstrumentName(prog)),
                   program: prog,
+                  isDrum,
                   notes: [],
                 });
               }
@@ -251,9 +254,11 @@ export async function parseMidiFile(arrayBuffer) {
             const prog = channelPrograms.get(ev.channel) || 0;
             const trackKey = `${t}_${ev.channel}`;
             if (!channelTracks.has(trackKey)) {
+              const isDrum = ev.channel === 9;
               channelTracks.set(trackKey, {
-                name: name || getInstrumentName(prog),
+                name: name || (isDrum ? 'Drums' : getInstrumentName(prog)),
                 program: prog,
+                isDrum,
                 notes: [],
               });
             }
@@ -280,9 +285,11 @@ export async function parseMidiFile(arrayBuffer) {
         const prog = channelPrograms.get(channel) || 0;
         const trackKey = `${t}_${channel}`;
         if (!channelTracks.has(trackKey)) {
+          const isDrum = channel === 9;
           channelTracks.set(trackKey, {
-            name: name || getInstrumentName(prog),
+            name: name || (isDrum ? 'Drums' : getInstrumentName(prog)),
             program: prog,
+            isDrum,
             notes: [],
           });
         }

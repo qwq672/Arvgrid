@@ -12,6 +12,7 @@ export default function ExportAudioDialog({ open, onClose, onExport, lang = 'zh'
     { id: 'wav', label: 'WAV', desc: lang === 'zh' ? '无损，文件较大' : 'Lossless, large file' },
     { id: 'mp3', label: 'MP3', desc: lang === 'zh' ? '有损压缩，文件小' : 'Lossy, small file' },
     { id: 'flac', label: 'FLAC', desc: lang === 'zh' ? '无损压缩，文件较小' : 'Lossless, smaller file' },
+    { id: 'aac', label: 'AAC', desc: lang === 'zh' ? '有损压缩，高质量' : 'Lossy, high quality' },
   ];
 
   const bitrates = [
@@ -25,7 +26,7 @@ export default function ExportAudioDialog({ open, onClose, onExport, lang = 'zh'
     onExport({ format, bitrate: format === 'mp3' ? bitrate : undefined });
   };
 
-  const progressPercent = progress ? Math.round((progress.current / progress.total) * 100) : 0;
+  const progressPercent = progress ? (progress.stage === 'finalizing' || progress.stage === 'complete' ? 100 : Math.round((progress.current / progress.total) * 100)) : 0;
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.7)' }} onClick={onClose}>
@@ -100,9 +101,11 @@ export default function ExportAudioDialog({ open, onClose, onExport, lang = 'zh'
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 6 }}>
               {progress?.stage === 'rendering' ? (lang === 'zh' ? '正在渲染音频...' : 'Rendering audio...') :
+               progress?.stage === 'finalizing' ? (lang === 'zh' ? '正在合成音频（请稍候）...' : 'Synthesizing audio (please wait)...') :
                progress?.stage === 'encoding' ? (lang === 'zh' ? '正在编码...' : 'Encoding...') :
+               progress?.stage === 'complete' ? (lang === 'zh' ? '完成！' : 'Complete!') :
                (lang === 'zh' ? '处理中...' : 'Processing...')}
-              {' '}{progressPercent}%
+              {progress?.stage !== 'finalizing' && progress?.stage !== 'complete' ? ` ${progressPercent}%` : ''}
             </div>
             <div style={{ width: '100%', height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
               <div style={{ width: `${progressPercent}%`, height: '100%', background: 'var(--accent)', borderRadius: 3, transition: 'width 0.2s' }} />

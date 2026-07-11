@@ -14,6 +14,12 @@ export default function SettingsPanel({
 }) {
   const fileInputRef = useRef(null);
   const [search, setSearch] = useState('');
+  const [exportSampleRate, setExportSampleRate] = useState(() => {
+    return parseInt(localStorage.getItem('arvgrid_export_sample_rate')) || 44100;
+  });
+  const [exportBitDepth, setExportBitDepth] = useState(() => {
+    return parseInt(localStorage.getItem('arvgrid_export_bit_depth')) || 16;
+  });
   const t = useTranslation(lang);
 
   if (!open) return null;
@@ -122,6 +128,51 @@ export default function SettingsPanel({
                   onChange={e => { if (onBufferSizeChange) onBufferSizeChange(e.target.checked ? 'ultra' : 'medium'); }} />
                 {lang === 'zh' ? '高内存模式（预建所有音色缓冲区，占用更多内存但播放更流畅）' : 'High Memory Mode (pre-build all buffers, uses more RAM for smoother playback)'}
               </label>
+            </div>
+          )}
+
+          {matchSearch(lang === 'zh' ? '音频输出' : 'Audio Output') && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                {lang === 'zh' ? '音频输出设置' : 'Audio Output Settings'}
+              </label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '采样率' : 'Sample Rate'}</span>
+                <select
+                  value={exportSampleRate}
+                  onChange={e => {
+                    const v = parseInt(e.target.value);
+                    setExportSampleRate(v);
+                    localStorage.setItem('arvgrid_export_sample_rate', v);
+                  }}
+                  style={{ flex: 1, fontSize: '0.72rem' }}
+                >
+                  <option value={22050}>22050 Hz</option>
+                  <option value={44100}>44100 Hz</option>
+                  <option value={48000}>48000 Hz</option>
+                  <option value={96000}>96000 Hz</option>
+                </select>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '位深' : 'Bit Depth'}</span>
+                <select
+                  value={exportBitDepth}
+                  onChange={e => {
+                    const v = parseInt(e.target.value);
+                    setExportBitDepth(v);
+                    localStorage.setItem('arvgrid_export_bit_depth', v);
+                  }}
+                  style={{ flex: 1, fontSize: '0.72rem' }}
+                >
+                  <option value={8}>8-bit</option>
+                  <option value={16}>16-bit</option>
+                  <option value={24}>24-bit</option>
+                  <option value={32}>32-bit float</option>
+                </select>
+              </div>
+              <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                {lang === 'zh' ? '影响音频导出质量（WAV 格式生效）' : 'Affects audio export quality (WAV format)'}
+              </div>
             </div>
           )}
 

@@ -24,12 +24,20 @@ export default function App() {
     const saved = localStorage.getItem('arvgrid_lang');
     return saved || 'zh';
   });
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('arvgrid_theme') || 'dark';
+  });
   const [sf2Loaded, setSf2Loaded] = useState(false);
   const [sf2Name, setSf2Name] = useState('');
 
   const project = useProject();
   const audioEngine = useAudioEngine();
   const t = useTranslation(lang);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('arvgrid_theme', theme);
+  }, [theme]);
 
   // 自动保存设置
   const [autoSaveMode, setAutoSaveMode] = useState(() => {
@@ -268,6 +276,8 @@ export default function App() {
         onLoadRecent={handleLoadRecent}
         lang={lang}
         onLangChange={handleLangChange}
+        theme={theme}
+        onThemeChange={setTheme}
         onLoadSF2={handleLoadSF2}
         sf2Loaded={sf2Loaded}
         sf2Name={sf2Name}
@@ -325,6 +335,8 @@ export default function App() {
         onResetSettings={handleResetSettings}
         lang={lang}
         onLangChange={handleLangChange}
+        theme={theme}
+        onThemeChange={setTheme}
         onLoadSF2={handleLoadSF2}
         sf2Loaded={sf2Loaded}
         sf2Name={sf2Name}

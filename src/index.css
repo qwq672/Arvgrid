@@ -28,6 +28,28 @@
   --green-hover: #6a9a6a;
 }
 
+:root[data-theme="light"] {
+  --bg: #e8e8ec;
+  --panel: #f5f5f8;
+  --border: #d0d0d6;
+  --text: #2a2a30;
+  --text-muted: #7a7a82;
+  --accent: #d8d8de;
+  --accent-hover: #c8c8ce;
+  --accent-active: #b8b8be;
+  --accent-text: #2a2a30;
+  --button-bg: #d8d8de;
+  --button-hover: #c8c8ce;
+  --track-bg: #e0e0e6;
+  --track-hover: #d8d8de;
+  --note-color: #666;
+  --note-selected: #444;
+  --danger: #c05050;
+  --danger-hover: #d06060;
+  --green: #4a7a4a;
+  --green-hover: #5a8a5a;
+}
+
 body {
   background: var(--bg);
   color: var(--text);

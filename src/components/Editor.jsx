@@ -16,7 +16,7 @@ const Editor = memo(({
   settingsOpen, setSettingsOpen, midiInfoOpen, setMidiInfoOpen,
   soundSource, setSoundSource, meta, setMeta,
   uiScale, onUiScaleChange, onClearCache, onResetSettings,
-  lang, onLangChange, onLoadSF2, sf2Loaded, sf2Name,
+  lang, onLangChange, theme, onThemeChange, onLoadSF2, sf2Loaded, sf2Name,
 }) => {
   const {
     tracks, currentTrackId, bpm, setBpm,
@@ -48,7 +48,7 @@ const Editor = memo(({
 
   const handlePlayNote = useCallback((pitch, duration, velocity) => {
     if (currentTrack) {
-      playNote(pitch, duration, velocity, currentTrack.program);
+      playNote(pitch, duration, velocity, currentTrack.program, currentTrack.isDrum);
     }
   }, [currentTrack, playNote]);
 
@@ -141,6 +141,8 @@ const Editor = memo(({
         onQuantize={handleOnQuantize}
         onClearTrack={handleOnClearTrack}
         lang={lang}
+        theme={theme}
+        onThemeChange={onThemeChange}
         analyserNodeRef={audioEngine.analyserNodeRef}
         editMode={editMode}
         onEditModeChange={setEditMode}
@@ -226,6 +228,8 @@ const Editor = memo(({
         onDelayFeedbackChange={setDelayFeedback}
         metronomeOn={audioEngine.metronomeOn}
         onMetronomeOnChange={audioEngine.setMetronomeOn}
+        masterVolume={audioEngine.masterVolume}
+        onMasterVolumeChange={audioEngine.setMasterVolume}
         lang={lang}
       />
       <SettingsModal

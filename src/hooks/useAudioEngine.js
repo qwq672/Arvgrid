@@ -4,6 +4,7 @@ import { parseSF2 } from '../lib/sf2Parser';
 
 // 前瞻调度器默认参数
 const MAX_POLYPHONY = 32; // 复音数上限
+const MIN_POLYPHONY = 12; // 自适应降级下限
 
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
 // 更大的 lookahead 和更短的 interval 可以减少卡顿
@@ -29,6 +30,7 @@ export function useAudioEngine() {
   const sf2BuffersRef = useRef({});
   const sf2PresetMapRef = useRef(new Map()); // 缓存 program -> preset 映射
   const [soundSource, setSoundSource] = useState('default');
+  const [masterVolume, setMasterVolume] = useState(0.7);
   const [reverbSend, setReverbSend] = useState(0.08);
   const [delaySend, setDelaySend] = useState(0.1);
   const [delayTime, setDelayTime] = useState(0.3);
@@ -65,6 +67,7 @@ export function useAudioEngine() {
   const [performanceInfo, setPerformanceInfo] = useState({ level: 'low', mem: 0 });
   const schedulerLagCountRef = useRef(0);
   const lastPerfUpdateRef = useRef(0); // 节流性能更新
+  const adaptivePolyphonyRef = useRef(MAX_POLYPHONY); // 自适应复音数
 
   useEffect(() => { soundSourceRef.current = soundSource; }, [soundSource]);
   useEffect(() => { metronomeOnRef.current = metronomeOn; }, [metronomeOn]);
@@ -384,7 +387,7 @@ export function useAudioEngine() {
     return { oscillators, sources, allNodes, stopTime: stopT };
   }
 
-  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program) {
+  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum) {
     const ctx = audioCtxRef.current;
     if (!ctx || !sf2DataRef.current) {
       return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
@@ -393,17 +396,27 @@ export function useAudioEngine() {
     const midi = noteToMidi(pitch);
     // 降低音量防止削波爆音
     const vol = (velocity / 127) * 0.12;
-    
-    // 使用缓存的 preset Map 进行 O(1) 查找
-    let preset = sf2PresetMapRef.current.get(program);
+
+    // 鼓组使用 bank 128，旋律乐器使用 bank 0
+    const cacheKey = isDrum ? `drum_${program}` : `melodic_${program}`;
+
+    let preset = sf2PresetMapRef.current.get(cacheKey);
     if (!preset) {
       const presets = sf2DataRef.current.presets;
-      // 优先匹配 bank 0（旋律乐器），避免误选鼓组（bank 128）
-      preset = presets.find(p => p.program === program && p.bank === 0)
-            || presets.find(p => p.program === program)
-            || presets[0];
+      if (isDrum) {
+        // 鼓组：优先 bank 128，然后任意 bank 的同 program
+        preset = presets.find(p => p.program === program && p.bank === 128)
+              || presets.find(p => p.bank === 128)
+              || presets.find(p => p.program === program);
+      } else {
+        // 旋律乐器：优先 bank 0
+        preset = presets.find(p => p.program === program && p.bank === 0)
+              || presets.find(p => p.program === program && p.bank !== 128)
+              || presets.find(p => p.program === program)
+              || presets[0];
+      }
       if (preset) {
-        sf2PresetMapRef.current.set(program, preset);
+        sf2PresetMapRef.current.set(cacheKey, preset);
       }
     }
     
@@ -434,14 +447,9 @@ export function useAudioEngine() {
     // 延迟创建 AudioBuffer（按需创建并缓存）
     if (!bestSample.audioBuffer && bestSample.pcmData) {
       try {
-        const length = bestSample.pcmData.length;
-        const audioBuffer = ctx.createBuffer(1, length, bestSample.sampleRate);
-        const channelData = audioBuffer.getChannelData(0);
-        const pcm = bestSample.pcmData;
-        for (let i = 0; i < length; i++) {
-          channelData[i] = pcm[i] / 32768;
-        }
-        bestSample.audioBuffer = audioBuffer;
+        bestSample.audioBuffer = createAudioBufferFromPCM(bestSample.pcmData, bestSample.sampleRate, ctx);
+        // AudioBuffer 创建后释放 PCM 数据以节省内存
+        bestSample.pcmData = null;
       } catch (e) {
         return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
       }
@@ -453,13 +461,14 @@ export function useAudioEngine() {
 
     const source = ctx.createBufferSource();
     source.buffer = bestSample.audioBuffer;
+
+    // 音高计算：rootKey + coarseTune (semitones) + fineTune (cents) + pitchCorrection (cents)
     const rootKey = bestSample.rootKey || 60;
-    
-    // 计算播放速率，包含 pitchCorrection
-    let playbackRate = Math.pow(2, (midi - rootKey) / 12);
-    if (bestSample.pitchCorrection) {
-      playbackRate *= Math.pow(2, bestSample.pitchCorrection / 1200);
-    }
+    const coarseTune = bestSample.coarseTune || 0;
+    const fineTune = bestSample.fineTune || 0;
+    const pitchCorrection = bestSample.pitchCorrection || 0;
+    const semitoneOffset = (midi - rootKey) + coarseTune + (fineTune / 100) + (pitchCorrection / 100);
+    const playbackRate = Math.pow(2, semitoneOffset / 12);
     source.playbackRate.value = playbackRate;
 
     const gain = ctx.createGain();
@@ -562,10 +571,18 @@ export function useAudioEngine() {
       let level = 'low';
       if (schedulerLag > 0.15) {
         level = 'critical';
+        // 自适应降级：严重延迟时减少复音数
+        adaptivePolyphonyRef.current = Math.max(MIN_POLYPHONY, adaptivePolyphonyRef.current - 4);
       } else if (schedulerLag > 0.05) {
         level = 'warn';
+        adaptivePolyphonyRef.current = Math.max(MIN_POLYPHONY, adaptivePolyphonyRef.current - 2);
       } else if (schedulerLag > 0.001) {
         level = 'normal';
+      } else {
+        // 性能良好时逐步恢复复音数
+        if (adaptivePolyphonyRef.current < MAX_POLYPHONY) {
+          adaptivePolyphonyRef.current = Math.min(MAX_POLYPHONY, adaptivePolyphonyRef.current + 1);
+        }
       }
       setPerformanceInfo({ level, mem });
     }
@@ -589,8 +606,8 @@ export function useAudioEngine() {
 
       if (whenSec > lookahead) break;
 
-      // 复音数限制
-      if (groups.length >= MAX_POLYPHONY) break;
+      // 复音数限制（自适应）
+      if (groups.length >= adaptivePolyphonyRef.current) break;
 
       let group = null;
       if (src === 'network' && instrumentRef.current) {
@@ -603,7 +620,7 @@ export function useAudioEngine() {
         }, delayMs);
         scheduledTimeoutsRef.current.push(tid);
       } else if (src === 'sf2' && sf2DataRef.current) {
-        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program);
+        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum);
       } else {
         group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program);
       }
@@ -640,7 +657,7 @@ export function useAudioEngine() {
   }, []);
 
   // 即时播放一个音符（用于试听）
-  const playNote = useCallback(async (pitch, duration, velocity, program = 0) => {
+  const playNote = useCallback(async (pitch, duration, velocity, program = 0, isDrum = false) => {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
     if (ctx.state === 'suspended') await ctx.resume();
@@ -653,7 +670,7 @@ export function useAudioEngine() {
       const vol = (velocity / 127) * 0.5;
       instrumentRef.current.play(pitch, when, { gain: vol, duration });
     } else if (src === 'sf2' && sf2DataRef.current) {
-      group = scheduleSF2Sample(when, pitch, duration, velocity, program);
+      group = scheduleSF2Sample(when, pitch, duration, velocity, program, isDrum);
     } else {
       group = scheduleSynthNote(when, pitch, duration, velocity, program);
     }
@@ -721,6 +738,7 @@ export function useAudioEngine() {
           pitch: note.pitch,
           velocity: note.velocity,
           program: track.program,
+          isDrum: track.isDrum || false,
         });
       });
     });
@@ -897,10 +915,15 @@ export function useAudioEngine() {
         sf2DataRef.current = sf2Data;
         sf2BuffersRef.current = {};
         sf2PresetMapRef.current.clear();
+        adaptivePolyphonyRef.current = MAX_POLYPHONY;
         setSoundSource('sf2');
         // 根据缓冲区模式预热 AudioBuffer
         const warmMode = bufferSizeRef.current === 'ultra' ? 'full' : 'fast';
         prewarmSF2Buffers(sf2Data, audioCtxRef.current, warmMode);
+        // 快速预热后，在空闲时继续预热更多音符（不阻塞 UI）
+        if (warmMode !== 'full') {
+          setTimeout(() => prewarmSF2BuffersExtended(sf2Data, audioCtxRef.current), 2000);
+        }
         return { success: true, name: sf2Data.name || 'SF2' };
       } catch (err) {
         console.error('SF2 load failed:', err);
@@ -917,13 +940,20 @@ export function useAudioEngine() {
     },
     bufferSize,
     setBufferSize,
+    masterVolume,
+    setMasterVolume: (vol) => {
+      setMasterVolume(vol);
+      if (masterGainRef.current) {
+        masterGainRef.current.gain.setValueAtTime(vol, audioCtxRef.current?.currentTime || 0);
+      }
+    },
     startTimeRef,
     analyserNodeRef,
     performanceInfo,
-  }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback, 
+  }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback,
       isPlaying, isPaused, currentTime, totalDuration, getPlaybackTime, seekTo,
-      reverbSend, delaySend, delayTime, delayFeedback, soundSource, metronomeOn, 
-      bufferSize, performanceInfo, initAudio, setSoundSource, setBufferSize]);
+      reverbSend, delaySend, delayTime, delayFeedback, soundSource, metronomeOn,
+      bufferSize, performanceInfo, initAudio, setSoundSource, setBufferSize, masterVolume]);
 }
 
 function noteToMidi(pitch) {
@@ -933,12 +963,25 @@ function noteToMidi(pitch) {
   return (parseInt(m[2])+1)*12 + map[m[1]];
 }
 
+// PCM Int16 → AudioBuffer 快速转换
+function createAudioBufferFromPCM(pcmData, sampleRate, ctx) {
+  const length = pcmData.length;
+  const audioBuffer = ctx.createBuffer(1, length, sampleRate);
+  const channelData = audioBuffer.getChannelData(0);
+  // 使用 set + Float32Array.from 比逐元素赋值更快
+  const float32 = new Float32Array(length);
+  for (let i = 0; i < length; i++) {
+    float32[i] = pcmData[i] * (1 / 32768);
+  }
+  channelData.set(float32);
+  return audioBuffer;
+}
+
 // 预热 SF2 AudioBuffer：为 preset 预建 buffer
 // mode: 'fast' = 只预热中央八度, 'full' = 预热全部音符（高内存模式）
 function prewarmSF2Buffers(sf2Data, ctx, mode = 'fast') {
   if (!sf2Data || !sf2Data.presets || !sf2Data.presets.length || !ctx) return;
 
-  // 收集所有需要预热的 (preset, midi, sample) 组合，去重
   const tasks = [];
   const seen = new Set();
   const maxPresets = mode === 'full' ? sf2Data.presets.length : Math.min(8, sf2Data.presets.length);
@@ -959,19 +1002,12 @@ function prewarmSF2Buffers(sf2Data, ctx, mode = 'fast') {
 
   let taskIdx = 0;
   const warmNext = () => {
-    // 每帧处理多个任务，但限制总量避免长时间阻塞
     const batchSize = mode === 'full' ? 8 : 2;
     for (let i = 0; i < batchSize && taskIdx < tasks.length; i++, taskIdx++) {
       const sample = tasks[taskIdx];
       try {
-        const length = sample.pcmData.length;
-        const audioBuffer = ctx.createBuffer(1, length, sample.sampleRate);
-        const channelData = audioBuffer.getChannelData(0);
-        const pcm = sample.pcmData;
-        for (let j = 0; j < length; j++) {
-          channelData[j] = pcm[j] / 32768;
-        }
-        sample.audioBuffer = audioBuffer;
+        sample.audioBuffer = createAudioBufferFromPCM(sample.pcmData, sample.sampleRate, ctx);
+        sample.pcmData = null; // 释放 PCM 数据
       } catch (e) {}
     }
     if (taskIdx < tasks.length) {
@@ -979,4 +1015,45 @@ function prewarmSF2Buffers(sf2Data, ctx, mode = 'fast') {
     }
   };
   warmNext();
+}
+
+// 扩展预热：在空闲时预热所有剩余音符，使用 requestIdleCallback 避免阻塞
+function prewarmSF2BuffersExtended(sf2Data, ctx) {
+  if (!sf2Data || !sf2Data.presets || !ctx) return;
+
+  const tasks = [];
+  const seen = new Set();
+  for (let p = 0; p < sf2Data.presets.length; p++) {
+    const preset = sf2Data.presets[p];
+    if (!preset.sampleIndex) continue;
+    for (let m = 0; m < 128; m++) {
+      const sample = preset.sampleIndex[m];
+      if (sample && !sample.audioBuffer && sample.pcmData && !seen.has(sample)) {
+        seen.add(sample);
+        tasks.push(sample);
+      }
+    }
+  }
+
+  if (tasks.length === 0) return;
+
+  let taskIdx = 0;
+  const ric = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
+  const warmIdle = (deadline) => {
+    while (taskIdx < tasks.length) {
+      const sample = tasks[taskIdx];
+      try {
+        sample.audioBuffer = createAudioBufferFromPCM(sample.pcmData, sample.sampleRate, ctx);
+        sample.pcmData = null;
+      } catch (e) {}
+      taskIdx++;
+      // 检查是否需要让出主线程
+      if (deadline.timeRemaining && deadline.timeRemaining() < 5) break;
+      if (!deadline.timeRemaining && taskIdx % 4 === 0) break;
+    }
+    if (taskIdx < tasks.length) {
+      ric(warmIdle);
+    }
+  };
+  ric(warmIdle);
 }

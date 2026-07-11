@@ -24,6 +24,8 @@ export default function Transport({
   onDelayFeedbackChange,
   metronomeOn,
   onMetronomeOnChange,
+  masterVolume,
+  onMasterVolumeChange,
   getPlaybackTime,
   lang = 'zh',
 }) {
@@ -125,6 +127,20 @@ export default function Transport({
         </label>
         <span>BPM</span>
         <input type="number" value={bpm} onChange={(e) => onBpmChange(parseInt(e.target.value))} style={{ width: '70px' }} />
+      </div>
+      <div style={{ display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>
+        <span style={{ fontSize: '0.75rem' }} title={t.volume || '音量'}>🔊</span>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={masterVolume}
+          onChange={(e) => onMasterVolumeChange && onMasterVolumeChange(parseFloat(e.target.value))}
+          style={{ width: '60px', cursor: 'pointer' }}
+          title={t.volume || '音量'}
+        />
+        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', minWidth: 28 }}>{Math.round(masterVolume * 100)}%</span>
       </div>
       <div style={{ flex: 1, minWidth: 120, display: 'flex', gap: 6, alignItems: 'center' }}>
         <div 
