@@ -20,13 +20,28 @@ const loadMp3Encoder = async () => {
 };
 
 /**
+ * 根据 quality 选项解析导出参数
+ * higher: 48kHz / 24bit(WAV) / 320kbps(MP3) — 更长渲染时间，更多细节
+ * balanced: 44.1kHz / 16bit / 192kbps — 适中
+ * faster: 44.1kHz / 16bit / 128kbps — 最快
+ */
+function resolveQualityParams(quality: string = 'balanced') {
+  switch (quality) {
+    case 'higher': return { sampleRate: 48000, bitDepth: 24, bitrate: 320 };
+    case 'faster': return { sampleRate: 44100, bitDepth: 16, bitrate: 128 };
+    default: return { sampleRate: 44100, bitDepth: 16, bitrate: 192 };
+  }
+}
+
+/**
  * 渲染 MIDI 数据为音频缓冲区
  */
 export async function renderAudioBuffer(
   tracks: any[],
   bpm: number,
   sf2Data: any,
-  onProgress?: (progress: ExportProgress) => void
+  onProgress?: (progress: ExportProgress) => void,
+  quality: string = 'balanced'
 ): Promise<AudioBuffer> {
   // 计算总时长
   let maxTime = 0;
@@ -39,7 +54,7 @@ export async function renderAudioBuffer(
   });
 
   const totalDuration = maxTime + 1; // 加 1 秒余音
-  const sampleRate = parseInt(localStorage.getItem('arvgrid_export_sample_rate') || '44100');
+  const { sampleRate } = resolveQualityParams(quality);
   const totalSamples = Math.ceil(totalDuration * sampleRate);
 
   // 创建离线 AudioContext
@@ -220,10 +235,9 @@ export async function renderAudioBuffer(
 /**
  * 导出为 WAV 格式
  */
-export function exportToWav(audioBuffer: AudioBuffer): Blob {
+export function exportToWav(audioBuffer: AudioBuffer, bitDepth: number = 16): Blob {
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
-  const bitDepth = parseInt(localStorage.getItem('arvgrid_export_bit_depth') || '16');
 
   let format = 1; // PCM
   let bytesPerSample = bitDepth / 8;
@@ -451,8 +465,11 @@ export async function exportAudio(
   options: ExportOptions,
   onProgress?: (progress: ExportProgress) => void
 ): Promise<Blob> {
+  const quality = options.quality || 'balanced';
+  const params = resolveQualityParams(quality);
+
   // 渲染音频缓冲区
-  const audioBuffer = await renderAudioBuffer(tracks, bpm, sf2Data, onProgress);
+  const audioBuffer = await renderAudioBuffer(tracks, bpm, sf2Data, onProgress, quality);
 
   // 通知 UI 进入编码阶段
   if (onProgress) {
@@ -464,10 +481,10 @@ export async function exportAudio(
   // 根据格式导出
   switch (options.format) {
     case 'wav':
-      blob = exportToWav(audioBuffer);
+      blob = exportToWav(audioBuffer, params.bitDepth);
       break;
     case 'mp3':
-      blob = await exportToMp3(audioBuffer, options.bitrate || 192, onProgress);
+      blob = await exportToMp3(audioBuffer, options.bitrate || params.bitrate, onProgress);
       break;
     case 'flac':
       blob = exportToFlac(audioBuffer);

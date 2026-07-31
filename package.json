@@ -1,6 +1,6 @@
 {
   "name": "arvgrid",
-  "version": "0.0.1",
+  "version": "260731.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

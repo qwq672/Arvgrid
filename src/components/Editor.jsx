@@ -271,24 +271,33 @@ const Editor = memo(({
       {/* 关于对话框 */}
       {aboutOpen && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.7)' }} onClick={() => setAboutOpen(false)}>
-          <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, maxWidth: 380, width: '90vw', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-            <img src="/icon.svg" alt="Arvgrid" style={{ width: 64, height: 64, marginBottom: 12, opacity: 0.8 }} />
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, maxWidth: 400, width: '90vw', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'inline-block', color: 'var(--text)', marginBottom: 8 }}>
+              <Icons.Logo size={56} />
+            </div>
             <h2 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 400 }}>Arvgrid</h2>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: '4px 0 12px' }}>
               {lang === 'zh' ? '免费开源的 MIDI 编辑器' : 'Free & Open Source MIDI Editor'}
             </p>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-              <div>Version 1.0.0</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              <div style={{ fontWeight: 600, color: 'var(--text)' }}>v260731</div>
               <div style={{ marginTop: 8 }}>
-                {lang === 'zh' ? '基于 Web Audio API 构建' : 'Built with Web Audio API'}
+                {lang === 'zh'
+                  ? '基于 MIT 协议开源 · Web Audio API + React + Vite'
+                  : 'Open source under MIT License · Web Audio API + React + Vite'}
               </div>
-              <div>React + Vite</div>
               <div style={{ marginTop: 8, fontSize: '0.65rem' }}>
-                {lang === 'zh' ? '支持 MIDI 导入/导出，SF2 音色库' : 'Supports MIDI import/export, SF2 soundfonts'}
+                {lang === 'zh' ? '支持 MIDI 导入/导出，SF2 音色库，AudioWorklet 实时合成' : 'Supports MIDI import/export, SF2 soundfonts, AudioWorklet synthesis'}
               </div>
-              <div style={{ marginTop: 12 }}>
-                <a href="https://github.com" target="_blank" rel="noopener" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '0.7rem' }}>
-                  GitHub
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.7rem' }}>
+                <a href="https://github.com/qwq672/arvgrid" target="_blank" rel="noopener" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                  {lang === 'zh' ? '仓库：github.com/qwq672/arvgrid' : 'Repo: github.com/qwq672/arvgrid'}
+                </a>
+                <a href="https://awa.lat" target="_blank" rel="noopener" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                  {lang === 'zh' ? '作者主页：awa.lat' : 'Author: awa.lat'}
+                </a>
+                <a href="mailto:b167963232@163.com" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                  b167963232@163.com
                 </a>
               </div>
             </div>

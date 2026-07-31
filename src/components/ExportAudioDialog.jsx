@@ -4,6 +4,7 @@ import { useTranslation } from '../lib/i18n';
 export default function ExportAudioDialog({ open, onClose, onExport, lang = 'zh', isExporting = false, progress = null }) {
   const [format, setFormat] = useState('wav');
   const [bitrate, setBitrate] = useState(192);
+  const [quality, setQuality] = useState('balanced');
   const t = useTranslation(lang);
 
   if (!open) return null;
@@ -15,6 +16,15 @@ export default function ExportAudioDialog({ open, onClose, onExport, lang = 'zh'
     { id: 'aac', label: 'AAC', desc: lang === 'zh' ? '有损压缩，高质量' : 'Lossy, high quality' },
   ];
 
+  const qualities = [
+    { id: 'higher', label: lang === 'zh' ? '更高' : 'Higher', desc: lang === 'zh' ? '48kHz · 更多细节 · 渲染较慢' : '48kHz · More detail · Slower' },
+    { id: 'balanced', label: lang === 'zh' ? '平衡' : 'Balanced', desc: lang === 'zh' ? '44.1kHz · 速度与质量兼顾' : '44.1kHz · Balanced' },
+    { id: 'faster', label: lang === 'zh' ? '更快' : 'Faster', desc: lang === 'zh' ? '44.1kHz · 最快导出' : '44.1kHz · Fastest' },
+  ];
+
+  // 质量预设对应的 MP3 默认比特率
+  const qualityBitrate = { higher: 320, balanced: 192, faster: 128 };
+
   const bitrates = [
     { value: 128, label: '128 kbps' },
     { value: 192, label: '192 kbps' },
@@ -22,8 +32,13 @@ export default function ExportAudioDialog({ open, onClose, onExport, lang = 'zh'
     { value: 320, label: '320 kbps' },
   ];
 
+  const handleQualityChange = (qId) => {
+    setQuality(qId);
+    setBitrate(qualityBitrate[qId]);
+  };
+
   const handleExport = () => {
-    onExport({ format, bitrate: format === 'mp3' ? bitrate : undefined });
+    onExport({ format, quality, bitrate: format === 'mp3' ? bitrate : undefined });
   };
 
   const progressPercent = progress ? (progress.stage === 'finalizing' || progress.stage === 'complete' ? 100 : Math.round((progress.current / progress.total) * 100)) : 0;
@@ -34,6 +49,36 @@ export default function ExportAudioDialog({ open, onClose, onExport, lang = 'zh'
         <h2 style={{ margin: '0 0 16px', fontSize: '1.1rem', fontWeight: 400 }}>
           {t.exportAudio || (lang === 'zh' ? '导出音频' : 'Export Audio')}
         </h2>
+
+        {/* 质量选择 */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+            {lang === 'zh' ? '质量' : 'Quality'}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {qualities.map(q => (
+              <button
+                key={q.id}
+                onClick={() => !isExporting && handleQualityChange(q.id)}
+                disabled={isExporting}
+                style={{
+                  flex: 1,
+                  padding: '10px 6px',
+                  borderRadius: 8,
+                  border: quality === q.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                  background: quality === q.id ? 'var(--accent-bg)' : 'var(--bg)',
+                  color: 'var(--text)',
+                  cursor: isExporting ? 'not-allowed' : 'pointer',
+                  opacity: isExporting ? 0.6 : 1,
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{q.label}</div>
+                <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 2 }}>{q.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
 
         {/* 格式选择 */}
         <div style={{ marginBottom: 16 }}>

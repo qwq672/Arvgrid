@@ -55,9 +55,11 @@ export interface SF2Data {
 // 音频导出相关类型定义
 
 export type AudioExportFormat = 'wav' | 'mp3' | 'flac' | 'aac';
+export type ExportQuality = 'higher' | 'balanced' | 'faster';
 
 export interface ExportOptions {
   format: AudioExportFormat;
+  quality?: ExportQuality;
   sampleRate?: number;
   bitDepth?: number;
   bitrate?: number; // 用于有损压缩格式

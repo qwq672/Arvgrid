@@ -50,11 +50,9 @@ export default function HomePage({
           textAlign: 'center',
           border: '1px solid var(--border)',
         }}>
-          <img 
-            src="/icon.svg" 
-            alt="Arvgrid" 
-            style={{ width: 100, height: 'auto', marginBottom: 12, opacity: 0.8 }} 
-          />
+          <div style={{ marginBottom: 12, color: 'var(--text)' }}>
+            <Icons.Logo size={100} />
+          </div>
           <h1 style={{ fontSize: '2.5rem', marginBottom: 6, color: 'var(--text)', fontWeight: 300 }}>Arvgrid</h1>
           <p style={{ marginBottom: 28, color: 'var(--text-muted)', fontSize: '0.9rem' }}>{t.tagline}</p>
 
