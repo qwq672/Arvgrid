@@ -14,18 +14,23 @@ function parseQ(v) {
   return Number(v) || 0.25;
 }
 
+// 预计算颜色缓存，避免每帧重复解析
+const colorCache = new Map();
+const lightenColorCache = new Map();
 function lightenColor(hex, factor = 0.35) {
+  const key = `${hex}_${factor}`;
+  let cached = lightenColorCache.get(key);
+  if (cached) return cached;
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   const lr = Math.min(255, Math.round(r + (255 - r) * factor));
   const lg = Math.min(255, Math.round(g + (255 - g) * factor));
   const lb = Math.min(255, Math.round(b + (255 - b) * factor));
-  return `rgb(${lr},${lg},${lb})`;
+  cached = `rgb(${lr},${lg},${lb})`;
+  lightenColorCache.set(key, cached);
+  return cached;
 }
-
-// 预计算颜色缓存，避免每帧重复解析
-const colorCache = new Map();
 function getColorRgba(hex, alpha) {
   const key = `${hex}_${alpha}`;
   let cached = colorCache.get(key);
@@ -60,6 +65,12 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const rafRef = useRef(null);
   const playheadSizeRef = useRef({ width: 0, height: 0 });
   const drawPendingRef = useRef(false);
+  // 离屏网格 canvas（P3 优化）：网格预渲染，draw() 时直接 drawImage
+  const gridCanvasRef = useRef(null);
+  const gridSizeRef = useRef({ w: 0, h: 0, maxSec: 0, zx: 0, zy: 0 });
+  // 拖动预览（P5 优化）：拖动时不提交，仅用 ref 存临时位移
+  const dragOriginRef = useRef(null); // { notes: [...], selSet: Set, startX, startY }
+  const dragOffsetRef = useRef({ dSec: 0, dPitch: 0 });
 
   // 使用 refs 存储频繁变化的数据，避免 useCallback 依赖变化
   const trackRef = useRef(track);
@@ -125,6 +136,48 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     spatialIndexRef.current = idx;
   }, [track.notes]);
 
+  // 网格预渲染到离屏 canvas（P3 优化）：仅在 maxSec/zx/zy 变化时重绘网格
+  // draw() 中用 drawImage 复制可见区域，避免每帧逐线 stroke
+  useEffect(() => {
+    const maxSec = maxSecRef.current;
+    const zx = zoomXRef.current;
+    const zy = zoomYRef.current;
+    const logicalW = Math.max(800, maxSec * zx + 120);
+    const logicalH = NOTE_COUNT * zy;
+    if (!gridCanvasRef.current) gridCanvasRef.current = document.createElement('canvas');
+    const gc = gridCanvasRef.current;
+    const physW = Math.round(logicalW * DPR);
+    const physH = Math.round(logicalH * DPR);
+    if (gc.width !== physW) gc.width = physW;
+    if (gc.height !== physH) gc.height = physH;
+    const gctx = gc.getContext('2d');
+    gctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    gctx.clearRect(0, 0, logicalW, logicalH);
+    // 节拍竖线
+    const beatSec = 60 / 120;
+    const totalBeats = Math.ceil(maxSec / beatSec) + 1;
+    for (let b = 0; b <= totalBeats; b++) {
+      const x = b * beatSec * zx;
+      gctx.beginPath();
+      gctx.moveTo(x, 0);
+      gctx.lineTo(x, logicalH);
+      if (b % 4 === 0) { gctx.strokeStyle = '#3a3a42'; gctx.lineWidth = 1; }
+      else { gctx.strokeStyle = '#2c2c34'; gctx.lineWidth = 0.5; }
+      gctx.stroke();
+    }
+    // 水平横线
+    for (let i = 0; i <= NOTE_COUNT; i++) {
+      const y = i * zy;
+      if (i % 12 === 0) { gctx.strokeStyle = '#3a3a42'; gctx.lineWidth = 0.8; }
+      else { gctx.strokeStyle = '#2a2a30'; gctx.lineWidth = 0.4; }
+      gctx.beginPath();
+      gctx.moveTo(0, y);
+      gctx.lineTo(logicalW, y);
+      gctx.stroke();
+    }
+    gridSizeRef.current = { w: logicalW, h: logicalH, maxSec, zx, zy };
+  }, [track.notes, zoomX, zoomY]);
+
   // 稳定的 draw 函数 - 使用 refs 读取最新值
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -153,30 +206,44 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
 
     ctx.clearRect(0, 0, logicalW, logicalH);
 
-    // 节拍网格 - 只绘制可见区域
-    const beatSec = 60 / 120;
-    const startBeat = Math.max(0, Math.floor(ox / (beatSec * zx)));
-    const endBeat = Math.min(Math.ceil(maxSec / beatSec) + 1, Math.ceil((ox + logicalW) / (beatSec * zx)) + 1);
-    for (let b = startBeat; b <= endBeat; b++) {
-      const x = b * beatSec * zx - ox;
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, logicalH);
-      if (b % 4 === 0) { ctx.strokeStyle = '#3a3a42'; ctx.lineWidth = 1; }
-      else { ctx.strokeStyle = '#2c2c34'; ctx.lineWidth = 0.5; }
-      ctx.stroke();
-    }
-    // 水平网格 - 只绘制可见区域
-    const startNote = Math.max(0, Math.floor(oy / zy));
-    const endNote = Math.min(NOTE_COUNT, Math.ceil((oy + logicalH) / zy) + 1);
-    for (let i = startNote; i <= endNote; i++) {
-      const y = i * zy - oy;
-      if (i % 12 === 0) { ctx.strokeStyle = '#3a3a42'; ctx.lineWidth = 0.8; }
-      else { ctx.strokeStyle = '#2a2a30'; ctx.lineWidth = 0.4; }
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(logicalW, y);
-      ctx.stroke();
+    // 网格：从离屏 canvas drawImage 复制可见区域（P3 优化）
+    const gc = gridCanvasRef.current;
+    const gs = gridSizeRef.current;
+    if (gc && gs.w > 0 && gs.maxSec === maxSec && gs.zx === zx && gs.zy === zy) {
+      // 源矩形（gridCanvas 物理像素）= 可见区域；目的矩形（主 canvas 逻辑像素）= 全屏
+      const srcX = Math.max(0, Math.min(gs.w - 1, ox * DPR));
+      const srcY = Math.max(0, Math.min(gs.h - 1, oy * DPR));
+      const srcW = Math.min(logicalW * DPR, gs.w - srcX);
+      const srcH = Math.min(logicalH * DPR, gs.h - srcY);
+      if (srcW > 0 && srcH > 0) {
+        // drawImage 不受 setTransform 影响，源坐标用物理像素，目的坐标用逻辑像素
+        ctx.drawImage(gc, srcX, srcY, srcW, srcH, srcX / DPR - ox, srcY / DPR - oy, srcW / DPR, srcH / DPR);
+      }
+    } else {
+      // 后备：直接绘制（grid effect 还未执行）
+      const beatSec = 60 / 120;
+      const startBeat = Math.max(0, Math.floor(ox / (beatSec * zx)));
+      const endBeat = Math.min(Math.ceil(maxSec / beatSec) + 1, Math.ceil((ox + logicalW) / (beatSec * zx)) + 1);
+      for (let b = startBeat; b <= endBeat; b++) {
+        const x = b * beatSec * zx - ox;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, logicalH);
+        if (b % 4 === 0) { ctx.strokeStyle = '#3a3a42'; ctx.lineWidth = 1; }
+        else { ctx.strokeStyle = '#2c2c34'; ctx.lineWidth = 0.5; }
+        ctx.stroke();
+      }
+      const startNote = Math.max(0, Math.floor(oy / zy));
+      const endNote = Math.min(NOTE_COUNT, Math.ceil((oy + logicalH) / zy) + 1);
+      for (let i = startNote; i <= endNote; i++) {
+        const y = i * zy - oy;
+        if (i % 12 === 0) { ctx.strokeStyle = '#3a3a42'; ctx.lineWidth = 0.8; }
+        else { ctx.strokeStyle = '#2a2a30'; ctx.lineWidth = 0.4; }
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(logicalW, y);
+        ctx.stroke();
+      }
     }
 
     const selSet = selectedSetRef.current;
@@ -204,13 +271,25 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     } // end if showGhosts
 
     // 当前轨道音符 - 只绘制可见区域
+    // P5 优化：拖动期间选中的音符用预览位置（基于 dragOffsetRef）绘制
     const notes = trk.notes;
+    const dragOrigin = dragOriginRef.current;
+    const dragActive = dragOrigin && dragStateRef.current.active && dragStateRef.current.type === 'move';
+    const dragOffset = dragOffsetRef.current;
+    const dragSet = dragActive ? dragOrigin.selSet : null;
+    const q = qStepRef.current;
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
       const midi = noteToMidi(n.pitch);
-      const pitchIdx = NOTE_COUNT - 1 - (midi - BASE_MIDI);
+      let pitchIdx = NOTE_COUNT - 1 - (midi - BASE_MIDI);
+      let startSec = n.startSec;
+      // 拖动预览：选中的音符应用偏移
+      if (dragSet && dragSet.has(n)) {
+        pitchIdx = Math.min(Math.max(0, pitchIdx + dragOffset.dPitch), NOTE_COUNT - 1);
+        startSec = Math.max(0, Math.round((n.startSec + dragOffset.dSec) / q) * q);
+      }
       if (pitchIdx < 0 || pitchIdx >= NOTE_COUNT) continue;
-      const x = n.startSec * zx - ox;
+      const x = startSec * zx - ox;
       const y = pitchIdx * zy - oy;
       const w = Math.max(2, n.durationSec * zx);
       const h = zy - 2;
@@ -404,12 +483,17 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     if (mode === 'select') {
       const selSet = selectedSetRef.current;
       if (note && !e.shiftKey) {
-        if (selSet.has(note)) {
-          setDragState({ active: true, type: 'move', startX: lx, startY: ly, notes: [...selectedNotesRef.current] });
-        } else {
-          setSelectedNotes([note]);
-          setDragState({ active: true, type: 'move', startX: lx, startY: ly, notes: [note] });
-        }
+        // P5 优化：拖动开始时快照原始 notes 和选中集合，拖动期间仅用 ref 存位移
+        const movingNotes = selSet.has(note) ? [...selectedNotesRef.current] : [note];
+        if (!selSet.has(note)) setSelectedNotes([note]);
+        dragOriginRef.current = {
+          notes: trk.notes,
+          selSet: new Set(movingNotes),
+          startX: lx,
+          startY: ly,
+        };
+        dragOffsetRef.current = { dSec: 0, dPitch: 0 };
+        setDragState({ active: true, type: 'move', startX: lx, startY: ly, notes: movingNotes });
       } else if (note && e.shiftKey) {
         setSelectedNotes(prev => prev.includes(note) ? prev.filter(n => n !== note) : [...prev, note]);
       } else if (!note) {
@@ -437,23 +521,15 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const trk = trackRef.current;
     if (!trk || !trk.notes) return;
     const zx = zoomXRef.current, zy = zoomYRef.current;
-    const q = qStepRef.current;
 
     if (ds.type === 'move') {
-      const dx = lx - ds.startX, dy = ly - ds.startY;
-      const dSec = dx / zx, dPitch = Math.round(dy / zy);
-      const selSet = new Set(ds.notes);
-      const updated = trk.notes.map(n => {
-        if (!selSet.has(n)) return n;
-        const midi = noteToMidi(n.pitch);
-        const newIdx = Math.min(Math.max(0, (NOTE_COUNT - 1 - (midi - BASE_MIDI)) + dPitch), NOTE_COUNT - 1);
-        return { ...n, startSec: Math.max(0, Math.round((n.startSec + dSec) / q) * q), pitch: midiToNote(BASE_MIDI + (NOTE_COUNT - 1 - newIdx)) };
-      });
-      updated.sort((a, b) => a.startSec - b.startSec);
-      onNotesChangeRef.current(updated);
-      const newSel = updated.filter(n => selSet.has(n));
-      setDragState(prev => ({ ...prev, startX: lx, startY: ly, notes: newSel }));
-      setSelectedNotes(newSel);
+      // P5 优化：拖动期间不提交 onNotesChange/setSelectedNotes/setDragState
+      // 仅更新 dragOffsetRef 并请求重绘，draw() 中绘制预览位置
+      const origin = dragOriginRef.current;
+      if (!origin) return;
+      const dx = lx - origin.startX, dy = ly - origin.startY;
+      dragOffsetRef.current = { dSec: dx / zx, dPitch: Math.round(dy / zy) };
+      requestRedraw();
     }
 
     if (ds.type === 'marquee') {
@@ -470,7 +546,38 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   }, []);
 
   const handlePointerUp = useCallback(() => {
-    if (dragStateRef.current.type === 'marquee') setMarqueeRect(null);
+    const ds = dragStateRef.current;
+    // P5 优化：拖动结束时一次性提交 move 结果
+    if (ds.type === 'move' && dragOriginRef.current) {
+      const origin = dragOriginRef.current;
+      const off = dragOffsetRef.current;
+      dragOriginRef.current = null;
+      if (off.dSec !== 0 || off.dPitch !== 0) {
+        const trk = trackRef.current;
+        if (trk && trk.notes) {
+          const selSet = origin.selSet;
+          const q = qStepRef.current;
+          const newSel = [];
+          const updated = trk.notes.map(n => {
+            if (!selSet.has(n)) return n;
+            const midi = noteToMidi(n.pitch);
+            const oldIdx = NOTE_COUNT - 1 - (midi - BASE_MIDI);
+            const newIdx = Math.min(Math.max(0, oldIdx + off.dPitch), NOTE_COUNT - 1);
+            const newObj = {
+              ...n,
+              startSec: Math.max(0, Math.round((n.startSec + off.dSec) / q) * q),
+              pitch: midiToNote(BASE_MIDI + (NOTE_COUNT - 1 - newIdx)),
+            };
+            newSel.push(newObj);
+            return newObj;
+          });
+          updated.sort((a, b) => a.startSec - b.startSec);
+          onNotesChangeRef.current(updated);
+          setSelectedNotes(newSel);
+        }
+      }
+    }
+    if (ds.type === 'marquee') setMarqueeRect(null);
     setDragState({ active: false, type: null, startX: 0, startY: 0, notes: [] });
   }, []);
 

@@ -77,6 +77,9 @@ export function useAudioEngine() {
   const lastPerfUpdateRef = useRef(0); // 节流性能更新
   const adaptivePolyphonyRef = useRef(INITIAL_POLYPHONY); // 自适应复音数（根据 CPU 核心数初始化）
   const noteBusRef = useRef(null); // 共享音符总线，减少每个音符的连接数
+  const workletNodeRef = useRef(null); // SF2 AudioWorkletNode（单节点替代所有 per-note 节点）
+  const workletReadyRef = useRef(false); // worklet 是否已成功注册并加载
+  const workletSampleIdCounterRef = useRef(0); // worklet sample ID 计数器
 
   useEffect(() => { soundSourceRef.current = soundSource; }, [soundSource]);
   useEffect(() => { metronomeOnRef.current = metronomeOn; }, [metronomeOn]);
@@ -160,14 +163,37 @@ export function useAudioEngine() {
     dryGainNode.connect(dry);
     dryGainNodeRef.current = dryGainNode;
 
-    // 共享音符总线：所有音符连接到此处（1连接/音符），
-    // 再由总线统一连接到 dry/reverb/delay（3连接总计），大幅减少音频图节点连接数
+    // 共享音符总线：合成器/鼓组等仍使用 AudioNode 路径连接到此处；
+    // SF2 worklet 节点也连接到此处（单节点替代所有 per-note BufferSource+Gain）
     const noteBus = ctx.createGain();
     noteBus.gain.value = 1.0;
     noteBus.connect(dryGainNode);
     noteBus.connect(reverbSendGain);
     noteBus.connect(delaySendGain);
     noteBusRef.current = noteBus;
+
+    // 注册 SF2 AudioWorklet：单 processor 实例 + 内部 voice pool
+    // 替代每个音符创建 BufferSource+Gain 的节点模型，100 同时发声从 200+ 节点降为 1 节点
+    try {
+      const workletUrl = new URL('worklets/sf2-processor.js', location.href).href;
+      await ctx.audioWorklet.addModule(workletUrl);
+      const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+      });
+      workletNode.connect(noteBus);
+      workletNodeRef.current = workletNode;
+      workletReadyRef.current = true;
+      // 初始复音数同步到 worklet
+      workletNode.port.postMessage({
+        type: 'set-polyphony',
+        value: adaptivePolyphonyRef.current,
+      });
+    } catch (err) {
+      console.warn('AudioWorklet 加载失败，SF2 播放将受影响:', err);
+      workletReadyRef.current = false;
+    }
 
     return ctx;
   }, []);
@@ -399,15 +425,18 @@ export function useAudioEngine() {
     return { oscillators, sources, allNodes, stopTime: stopT };
   }
 
-  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum) {
+  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum, batchBuffer) {
     const ctx = audioCtxRef.current;
     if (!ctx || !sf2DataRef.current) {
       return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
     }
 
+    // worklet 未就绪时回退到合成器
+    if (!workletReadyRef.current || !workletNodeRef.current) {
+      return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
+    }
+
     const midi = noteToMidi(pitch);
-    // 降低音量防止削波爆音
-    const vol = (velocity / 127) * 0.12;
 
     // 鼓组使用 bank 128，旋律乐器使用 bank 0
     const cacheKey = isDrum ? `drum_${program}` : `melodic_${program}`;
@@ -431,7 +460,7 @@ export function useAudioEngine() {
         sf2PresetMapRef.current.set(cacheKey, preset);
       }
     }
-    
+
     if (!preset || !preset.sampleIndex) {
       return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
     }
@@ -446,7 +475,7 @@ export function useAudioEngine() {
         if (bestSample) break;
       }
     }
-    
+
     // 仍未找到则回退到中央 C
     if (!bestSample) {
       bestSample = preset.sampleIndex[60];
@@ -456,54 +485,37 @@ export function useAudioEngine() {
       return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
     }
 
-    // 延迟创建 AudioBuffer（按需创建并缓存）
-    if (!bestSample.audioBuffer && bestSample.pcmData) {
-      try {
-        bestSample.audioBuffer = createAudioBufferFromPCM(bestSample.pcmData, bestSample.sampleRate, ctx);
-        // AudioBuffer 创建后释放 PCM 数据以节省内存
-        bestSample.pcmData = null;
-      } catch (e) {
-        return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
-      }
-    }
-
-    if (!bestSample.audioBuffer) {
+    // 样本数据未传输到 worklet（应在 loadSF2 时已传输），回退到合成器
+    if (bestSample.workletSampleId === undefined) {
       return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
     }
 
-    const source = ctx.createBufferSource();
-    source.buffer = bestSample.audioBuffer;
-
-    // 音高计算：rootKey + coarseTune (semitones) + fineTune (cents) + pitchCorrection (cents)
-    const rootKey = bestSample.rootKey || 60;
-    const coarseTune = bestSample.coarseTune || 0;
-    const fineTune = bestSample.fineTune || 0;
-    const pitchCorrection = bestSample.pitchCorrection || 0;
-    const semitoneOffset = (midi - rootKey) + coarseTune + (fineTune / 100) + (pitchCorrection / 100);
-    const playbackRate = Math.pow(2, semitoneOffset / 12);
-    source.playbackRate.value = playbackRate;
-
-    const gain = ctx.createGain();
-    // 包络：20ms attack, 80ms release；鼓组使用更短的包络减少 CPU 开销
-    if (isDrum) {
-      gain.gain.setValueAtTime(vol, whenSec);
-      gain.gain.exponentialRampToValueAtTime(0.0001, whenSec + Math.min(duration, 0.5));
+    // 发送 noteOn 消息到 worklet，由音频线程完成样本读取、变调、包络、混音
+    // 不再创建任何 AudioNode —— 所有处理在 worklet 内完成
+    // P4 优化：若提供 batchBuffer，则收集消息由调用方批量发送，避免逐音符 postMessage
+    const noteMsg = {
+      type: 'note-on',
+      sampleId: bestSample.workletSampleId,
+      whenSec: whenSec,
+      duration: duration,
+      velocity: velocity,
+      midi: midi,
+      rootKey: bestSample.rootKey || 60,
+      coarseTune: bestSample.coarseTune || 0,
+      fineTune: bestSample.fineTune || 0,
+      pitchCorrection: bestSample.pitchCorrection || 0,
+      isDrum: !!isDrum,
+    };
+    if (batchBuffer) {
+      batchBuffer.push(noteMsg);
     } else {
-      gain.gain.setValueAtTime(0.0001, whenSec);
-      gain.gain.setTargetAtTime(vol, whenSec, 0.020);
-      gain.gain.setValueAtTime(vol, whenSec + duration - 0.002);
-      gain.gain.setTargetAtTime(0.0001, whenSec + duration, 0.080);
+      workletNodeRef.current.port.postMessage(noteMsg);
     }
 
-    source.connect(gain);
-    // 连接到共享音符总线（1连接代替3连接，大幅减少音频图复杂度）
-    gain.connect(noteBusRef.current);
-
-    const stopT = whenSec + duration + 0.1;
-    source.start(whenSec);
-    source.stop(stopT);
-
-    return { oscillators: [], sources: [source], allNodes: [gain], stopTime: stopT };
+    // 返回轻量占位 group，保持与现有 cleanup 逻辑兼容
+    // oscillators/sources/allNodes 均为空数组，disconnectNodeGroup 是 no-op
+    const stopT = whenSec + duration + 0.15;
+    return { oscillators: [], sources: [], allNodes: [], stopTime: stopT, worklet: true };
   }
 
   function scheduleMetronomeClick(whenSec, isDownbeat) {
@@ -551,13 +563,20 @@ export function useAudioEngine() {
     if (!ctx) return;
     const now = ctx.currentTime;
     activeNodeGroupsRef.current.forEach(group => {
-      if (group.stopTime > now) {
-        group.oscillators.forEach(osc => { try { osc.stop(now + 0.01); } catch(e) {} });
-        group.sources.forEach(src => { try { src.stop(now + 0.01); } catch(e) {} });
+      // worklet 占位 group 没有 AudioNode 需要停止
+      if (!group.worklet) {
+        if (group.stopTime > now) {
+          group.oscillators.forEach(osc => { try { osc.stop(now + 0.01); } catch(e) {} });
+          group.sources.forEach(src => { try { src.stop(now + 0.01); } catch(e) {} });
+        }
+        disconnectNodeGroup(group);
       }
-      disconnectNodeGroup(group);
     });
     activeNodeGroupsRef.current = [];
+    // 立即静音 worklet 中所有活跃 voice
+    if (workletReadyRef.current && workletNodeRef.current) {
+      workletNodeRef.current.port.postMessage({ type: 'all-notes-off' });
+    }
   }, []);
 
   // 前瞻调度器核心 - 使用自校正 setTimeout
@@ -585,22 +604,39 @@ export function useAudioEngine() {
       lastPerfUpdateRef.current = now;
       const mem = performance.memory?.usedJSHeapSize / 1048576 || 0;
       let level = 'low';
+      let polyphonyChanged = false;
       if (schedulerLag > 0.15) {
         level = 'critical';
         // 自适应降级：严重延迟时减少复音数
-        adaptivePolyphonyRef.current = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 4);
+        const newPoly = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 4);
+        if (newPoly !== adaptivePolyphonyRef.current) {
+          adaptivePolyphonyRef.current = newPoly;
+          polyphonyChanged = true;
+        }
       } else if (schedulerLag > 0.05) {
         level = 'warn';
-        adaptivePolyphonyRef.current = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 2);
+        const newPoly = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 2);
+        if (newPoly !== adaptivePolyphonyRef.current) {
+          adaptivePolyphonyRef.current = newPoly;
+          polyphonyChanged = true;
+        }
       } else if (schedulerLag > 0.001) {
         level = 'normal';
       } else {
         // 性能良好时逐步恢复复音数
         if (adaptivePolyphonyRef.current < MAX_POLYPHONY) {
           adaptivePolyphonyRef.current = Math.min(MAX_POLYPHONY, adaptivePolyphonyRef.current + 1);
+          polyphonyChanged = true;
         }
       }
       setPerformanceInfo({ level, mem });
+      // 同步复音数到 worklet（worklet 内部 voice pool 据此进行 voice stealing）
+      if (polyphonyChanged && workletReadyRef.current && workletNodeRef.current) {
+        workletNodeRef.current.port.postMessage({
+          type: 'set-polyphony',
+          value: adaptivePolyphonyRef.current,
+        });
+      }
     }
 
     // 清理已完成的节点组 - 原地修改避免 GC
@@ -616,6 +652,9 @@ export function useAudioEngine() {
     groups.length = writeIdx;
 
     // 调度即将到达的音符
+    // P4 优化：收集一个调度周期内所有 SF2 note-on，最后一次性 postMessage
+    const sf2BatchBuffer = (src === 'sf2' && sf2DataRef.current && workletReadyRef.current && workletNodeRef.current) ? [] : null;
+
     while (nextEventIndexRef.current < events.length) {
       const ev = events[nextEventIndexRef.current];
       const whenSec = startTimeRef.current + ev.time;
@@ -636,7 +675,7 @@ export function useAudioEngine() {
         }, delayMs);
         scheduledTimeoutsRef.current.push(tid);
       } else if (src === 'sf2' && sf2DataRef.current) {
-        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum);
+        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum, sf2BatchBuffer);
       } else {
         group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program);
       }
@@ -646,6 +685,11 @@ export function useAudioEngine() {
       }
 
       nextEventIndexRef.current++;
+    }
+
+    // 一次性发送批量 note-on（P4 优化）
+    if (sf2BatchBuffer && sf2BatchBuffer.length > 0) {
+      workletNodeRef.current.port.postMessage({ type: 'note-on-batch', notes: sf2BatchBuffer });
     }
 
     // 节拍器调度
@@ -933,13 +977,20 @@ export function useAudioEngine() {
         sf2PresetMapRef.current.clear();
         adaptivePolyphonyRef.current = MAX_POLYPHONY;
         setSoundSource('sf2');
-        // 根据缓冲区模式预热 AudioBuffer
-        const warmMode = bufferSizeRef.current === 'ultra' ? 'full' : 'fast';
-        prewarmSF2Buffers(sf2Data, audioCtxRef.current, warmMode);
-        // 快速预热后，在空闲时继续预热更多音符（不阻塞 UI）
-        if (warmMode !== 'full') {
-          setTimeout(() => prewarmSF2BuffersExtended(sf2Data, audioCtxRef.current), 2000);
+
+        // 将所有样本数据传输到 worklet（分批进行，不阻塞 UI）
+        // worklet 在音频线程内完成样本读取、变调、包络，无需创建 AudioBuffer
+        if (workletReadyRef.current && workletNodeRef.current) {
+          // 先清除 worklet 中旧的样本库（加载新 SF2 时）
+          workletNodeRef.current.port.postMessage({ type: 'clear-samples' });
+          await sendSamplesToWorklet(sf2Data, workletNodeRef.current, workletSampleIdCounterRef);
+          // 同步当前复音数到 worklet
+          workletNodeRef.current.port.postMessage({
+            type: 'set-polyphony',
+            value: adaptivePolyphonyRef.current,
+          });
         }
+
         return { success: true, name: sf2Data.name || 'SF2' };
       } catch (err) {
         console.error('SF2 load failed:', err);
@@ -979,97 +1030,71 @@ function noteToMidi(pitch) {
   return (parseInt(m[2])+1)*12 + map[m[1]];
 }
 
-// PCM Int16 → AudioBuffer 快速转换
-function createAudioBufferFromPCM(pcmData, sampleRate, ctx) {
-  const length = pcmData.length;
-  const audioBuffer = ctx.createBuffer(1, length, sampleRate);
-  const channelData = audioBuffer.getChannelData(0);
-  // 使用 set + Float32Array.from 比逐元素赋值更快
-  const float32 = new Float32Array(length);
-  for (let i = 0; i < length; i++) {
-    float32[i] = pcmData[i] * (1 / 32768);
-  }
-  channelData.set(float32);
-  return audioBuffer;
-}
+// 将 SF2 样本数据传输到 AudioWorklet
+// 分批进行以避免阻塞主线程；通过 transferable 转移 Float32Array 所有权到 worklet
+// 保留主线程的 pcmData (Int16Array) 供 audioExport.ts 离线渲染使用
+async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef) {
+  if (!sf2Data || !sf2Data.presets || !workletNode) return;
 
-// 预热 SF2 AudioBuffer：为 preset 预建 buffer
-// mode: 'fast' = 只预热中央八度, 'full' = 预热全部音符（高内存模式）
-function prewarmSF2Buffers(sf2Data, ctx, mode = 'fast') {
-  if (!sf2Data || !sf2Data.presets || !sf2Data.presets.length || !ctx) return;
+  // 按 pcmData 引用去重：同一 pcmData 可能被多个 sampleObj 共享（不同 zone 有不同音高参数）
+  // 但每个 sampleObj 需要记录自己的 workletSampleId 以便 noteOn 时查找
+  const pcmMap = new Map();  // pcmData(Int16Array) -> { id, pcmData, sampleRate, sampleObjs: [] }
 
-  const tasks = [];
-  const seen = new Set();
-  const maxPresets = mode === 'full' ? sf2Data.presets.length : Math.min(8, sf2Data.presets.length);
-  const midiStart = mode === 'full' ? 0 : 36;
-  const midiEnd = mode === 'full' ? 128 : 84;
-
-  for (let p = 0; p < maxPresets; p++) {
-    const preset = sf2Data.presets[p];
-    if (!preset.sampleIndex) continue;
-    for (let m = midiStart; m < midiEnd; m++) {
-      const sample = preset.sampleIndex[m];
-      if (sample && !sample.audioBuffer && sample.pcmData && !seen.has(sample)) {
-        seen.add(sample);
-        tasks.push(sample);
-      }
-    }
-  }
-
-  let taskIdx = 0;
-  const warmNext = () => {
-    const batchSize = mode === 'full' ? 8 : 2;
-    for (let i = 0; i < batchSize && taskIdx < tasks.length; i++, taskIdx++) {
-      const sample = tasks[taskIdx];
-      try {
-        sample.audioBuffer = createAudioBufferFromPCM(sample.pcmData, sample.sampleRate, ctx);
-        sample.pcmData = null; // 释放 PCM 数据
-      } catch (e) {}
-    }
-    if (taskIdx < tasks.length) {
-      requestAnimationFrame(warmNext);
-    }
-  };
-  warmNext();
-}
-
-// 扩展预热：在空闲时预热所有剩余音符，使用 requestIdleCallback 避免阻塞
-function prewarmSF2BuffersExtended(sf2Data, ctx) {
-  if (!sf2Data || !sf2Data.presets || !ctx) return;
-
-  const tasks = [];
-  const seen = new Set();
-  for (let p = 0; p < sf2Data.presets.length; p++) {
-    const preset = sf2Data.presets[p];
+  for (const preset of sf2Data.presets) {
     if (!preset.sampleIndex) continue;
     for (let m = 0; m < 128; m++) {
-      const sample = preset.sampleIndex[m];
-      if (sample && !sample.audioBuffer && sample.pcmData && !seen.has(sample)) {
-        seen.add(sample);
-        tasks.push(sample);
+      const sampleObj = preset.sampleIndex[m];
+      if (!sampleObj || !sampleObj.pcmData) continue;
+
+      let entry = pcmMap.get(sampleObj.pcmData);
+      if (!entry) {
+        const id = idCounterRef.current++;
+        entry = {
+          id,
+          pcmData: sampleObj.pcmData,
+          sampleRate: sampleObj.sampleRate,
+          sampleObjs: [],
+        };
+        pcmMap.set(sampleObj.pcmData, entry);
       }
+      entry.sampleObjs.push(sampleObj);
     }
   }
 
-  if (tasks.length === 0) return;
+  if (pcmMap.size === 0) return;
 
-  let taskIdx = 0;
-  const ric = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
-  const warmIdle = (deadline) => {
-    while (taskIdx < tasks.length) {
-      const sample = tasks[taskIdx];
-      try {
-        sample.audioBuffer = createAudioBufferFromPCM(sample.pcmData, sample.sampleRate, ctx);
-        sample.pcmData = null;
-      } catch (e) {}
-      taskIdx++;
-      // 检查是否需要让出主线程
-      if (deadline.timeRemaining && deadline.timeRemaining() < 5) break;
-      if (!deadline.timeRemaining && taskIdx % 4 === 0) break;
+  const tasks = Array.from(pcmMap.values());
+  const BATCH_SIZE = 8;
+  const scale = 1 / 32768;
+
+  for (let i = 0; i < tasks.length; i++) {
+    const entry = tasks[i];
+    const pcmData = entry.pcmData;
+    const length = pcmData.length;
+
+    // Int16 -> Float32 转换（新建 Float32Array，不修改原 pcmData）
+    const float32 = new Float32Array(length);
+    for (let j = 0; j < length; j++) {
+      float32[j] = pcmData[j] * scale;
     }
-    if (taskIdx < tasks.length) {
-      ric(warmIdle);
+
+    // 通过 transferable 转移 float32.buffer 所有权到 worklet
+    // 转移后主线程的 float32 变量不再可用，但 pcmData (Int16Array) 不受影响
+    workletNode.port.postMessage({
+      type: 'load-sample',
+      id: entry.id,
+      data: float32,
+      sampleRate: entry.sampleRate,
+    }, [float32.buffer]);
+
+    // 在所有共享此 pcmData 的 sampleObj 上记录 workletSampleId
+    for (let k = 0; k < entry.sampleObjs.length; k++) {
+      entry.sampleObjs[k].workletSampleId = entry.id;
     }
-  };
-  ric(warmIdle);
+
+    // 每 BATCH_SIZE 个样本让出主线程一次，避免长时间阻塞 UI
+    if ((i + 1) % BATCH_SIZE === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
 }

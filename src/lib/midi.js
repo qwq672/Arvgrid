@@ -8,9 +8,13 @@ export function midiToNote(midi) {
 }
 
 // 将音高名称转换为 MIDI 音符编号，例如 "C4" -> 60
+// 缓存解析结果，避免每帧重复正则匹配（P1 优化）
+const _noteToMidiCache = new Map();
 export function noteToMidi(pitch) {
+  let cached = _noteToMidiCache.get(pitch);
+  if (cached !== undefined) return cached;
   const match = pitch.match(/^([A-G][#b]?)(\d+)$/);
-  if (!match) return 60;
+  if (!match) { _noteToMidiCache.set(pitch, 60); return 60; }
   const note = match[1];
   const octave = parseInt(match[2]);
   const map = {
@@ -23,8 +27,10 @@ export function noteToMidi(pitch) {
     'B': 11
   };
   const semitone = map[note];
-  if (semitone === undefined) return 60;
-  return (octave + 1) * 12 + semitone;
+  if (semitone === undefined) { _noteToMidiCache.set(pitch, 60); return 60; }
+  const result = (octave + 1) * 12 + semitone;
+  _noteToMidiCache.set(pitch, result);
+  return result;
 }
 
 // 将 tick 转换为秒，使用 tempo map
