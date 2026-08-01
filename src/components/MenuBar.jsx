@@ -76,8 +76,14 @@ export default function MenuBar({
     resize();
     try { observer = new ResizeObserver(resize); observer.observe(canvas); } catch (e) {}
 
-    const draw = () => {
+    // 复用 dataArray 避免每帧 GC（性能优化）
+    let dataArray = null;
+    let lastDrawTs = 0;
+    const draw = (ts) => {
       oscRafRef.current = requestAnimationFrame(draw);
+      // 节流到 ~30fps，降低主线程开销
+      if (ts - lastDrawTs < 33) return;
+      lastDrawTs = ts;
       const analyser = analyserNodeRef?.current;
       if (!analyser || !ctx || !canvas) {
         // 无分析器时画一条静态线
@@ -86,46 +92,43 @@ export default function MenuBar({
           ctx.beginPath();
           ctx.strokeStyle = '#4a8a6a';
           ctx.lineWidth = 2;
-          ctx.shadowColor = '#4a8a6a';
-          ctx.shadowBlur = 6;
           ctx.moveTo(0, canvas.height / 2);
           ctx.lineTo(canvas.width, canvas.height / 2);
           ctx.stroke();
-          ctx.shadowBlur = 0;
         }
         return;
       }
       const bufferLength = analyser.fftSize;
-      const dataArray = new Uint8Array(bufferLength);
+      if (!dataArray || dataArray.length !== bufferLength) dataArray = new Uint8Array(bufferLength);
       try { analyser.getByteTimeDomainData(dataArray); } catch (e) { return; }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 计算 RMS 音量
+      // 计算 RMS 音量（单次遍历）
       let sum = 0;
       let peak = 0;
       for (let i = 0; i < bufferLength; i++) {
         const v = (dataArray[i] - 128) / 128;
         sum += v * v;
-        if (Math.abs(v) > peak) peak = Math.abs(v);
+        const av = v < 0 ? -v : v;
+        if (av > peak) peak = av;
       }
       const rms = Math.sqrt(sum / bufferLength);
 
       // 根据音量决定颜色：静音=绿色线条，中等=青色，大音量=黄色，爆音=红色
       let color;
       if (peak > 0.95) {
-        color = '#e04040'; // 爆音红色
+        color = '#e04040';
       } else if (rms > 0.15) {
-        color = '#c0a030'; // 大音量黄色
+        color = '#c0a030';
       } else if (rms > 0.03) {
-        color = '#40b0b0'; // 中等青色
+        color = '#40b0b0';
       } else {
-        color = '#4a8a6a'; // 安静绿色
+        color = '#4a8a6a';
       }
 
-      ctx.lineWidth = 3;
+      // 不使用 shadowBlur（canvas 中最重的操作之一），改用稍粗线条保证可见度
+      ctx.lineWidth = 2;
       ctx.strokeStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 8;
       ctx.beginPath();
       const sliceWidth = canvas.width / bufferLength;
       let x = 0;
@@ -136,7 +139,6 @@ export default function MenuBar({
         x += sliceWidth;
       }
       ctx.stroke();
-      ctx.shadowBlur = 0;
     };
     draw();
     return () => { if (oscRafRef.current) cancelAnimationFrame(oscRafRef.current); if (observer) observer.disconnect(); };

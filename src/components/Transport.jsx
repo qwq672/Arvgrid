@@ -44,7 +44,7 @@ export default function Transport({
       // 更新 DOM
       if (progressFillRef.current) {
         const percent = totalDuration ? (displayTimeRef.current / totalDuration) * 100 : 0;
-        progressFillRef.current.style.width = `${percent}%`;
+        progressFillRef.current.style.transform = `scaleX(${totalDuration ? percent / 100 : 0})`;
       }
       if (timeDisplayRef.current) {
         timeDisplayRef.current.textContent = `${formatTime(displayTimeRef.current)} / ${formatTime(totalDuration)}`;
@@ -59,7 +59,7 @@ export default function Transport({
       // 直接更新 DOM，避免 React 重渲染
       if (progressFillRef.current) {
         const percent = totalDuration ? (displayTimeRef.current / totalDuration) * 100 : 0;
-        progressFillRef.current.style.width = `${percent}%`;
+        progressFillRef.current.style.transform = `scaleX(${totalDuration ? percent / 100 : 0})`;
       }
       if (timeDisplayRef.current) {
         timeDisplayRef.current.textContent = `${formatTime(displayTimeRef.current)} / ${formatTime(totalDuration)}`;
@@ -149,7 +149,7 @@ export default function Transport({
           style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3, cursor: 'pointer', position: 'relative' }}
           onMouseDown={handleSeekMouseDown}
         >
-          <div ref={progressFillRef} className="progress-fill" style={{ width: `${totalDuration ? (currentTime / totalDuration) * 100 : 0}%`, height: '100%', background: 'var(--accent-hover)', borderRadius: 3, pointerEvents: 'none' }} />
+          <div ref={progressFillRef} className="progress-fill" style={{ width: '100%', transformOrigin: 'left center', transform: `scaleX(${totalDuration ? currentTime / totalDuration : 0})`, height: '100%', background: 'var(--accent-hover)', borderRadius: 3, pointerEvents: 'none', willChange: 'transform' }} />
         </div>
         <span ref={timeDisplayRef} style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{formatTime(currentTime)} / {formatTime(totalDuration)}</span>
       </div>

@@ -936,8 +936,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     };
   }, []);
 
-  // 钢琴键盘画布 - 绘制黑白键 + 音名，仅在 zoomY 变化时重绘
-  const KEY_W = 56;
+  // 钢琴键盘画布 - 真实钢琴外观（黑白键 3D 渐变 + 高光/阴影），仅在 zoomY 变化时重绘
+  const KEY_W = 64;
   useEffect(() => {
     const el = keyboardCanvasRef.current;
     if (!el) return;
@@ -949,32 +949,55 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const ctx = el.getContext('2d');
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.clearRect(0, 0, KEY_W, logicalH);
-    const blackW = 26;
+    const blackW = 40;
+    const blackX = KEY_W - blackW;
+    const rowH = zoomY;
+    // 先画所有白键底色（黑键下方也铺白底，模拟白键延续）
+    for (let i = 0; i < NOTE_COUNT; i++) {
+      const y = i * zoomY;
+      // 白键渐变（上亮下暗，模拟弧面）
+      const wg = ctx.createLinearGradient(0, y, 0, y + rowH);
+      wg.addColorStop(0, '#f4f4f7');
+      wg.addColorStop(0.5, '#e8e8ed');
+      wg.addColorStop(1, '#d4d4da');
+      ctx.fillStyle = wg;
+      ctx.fillRect(0, y, KEY_W, rowH);
+      // 白键之间缝隙阴影
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.fillRect(0, y + rowH - 1, KEY_W, 1);
+    }
+    // 再画黑键（叠在白键上，带 3D 高光与投影）
     for (let i = 0; i < NOTE_COUNT; i++) {
       const midi = BASE_MIDI + (NOTE_COUNT - 1 - i);
       const y = i * zoomY;
       const isBlack = [1, 3, 6, 8, 10].includes(midi % 12);
-      if (isBlack) {
-        // 黑键：右侧短块
-        ctx.fillStyle = '#15151a';
-        ctx.fillRect(KEY_W - blackW, y, blackW, Math.max(1, zoomY - 0.5));
-        ctx.strokeStyle = '#000';
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(KEY_W - blackW, y, blackW, Math.max(1, zoomY - 0.5));
-      } else {
-        // 白键
-        ctx.fillStyle = '#e9e9ee';
-        ctx.fillRect(0, y, KEY_W, Math.max(1, zoomY - 0.5));
-        ctx.strokeStyle = '#9a9aa0';
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(0, y, KEY_W, Math.max(1, zoomY - 0.5));
-      }
-      // C 音名标注
-      if (midi % 12 === 0) {
-        ctx.fillStyle = isBlack ? '#888' : '#333';
-        ctx.font = `${Math.min(10, Math.max(7, zoomY - 4))}px monospace`;
-        ctx.fillText(midiToNote(midi), 3, y + zoomY - 3);
-      }
+      if (!isBlack) continue;
+      // 黑键主体渐变
+      const bg = ctx.createLinearGradient(0, y, 0, y + rowH);
+      bg.addColorStop(0, '#3a3a42');
+      bg.addColorStop(0.12, '#1e1e24');
+      bg.addColorStop(0.85, '#0c0c10');
+      bg.addColorStop(1, '#242428'); // 前缘反光
+      ctx.fillStyle = bg;
+      ctx.fillRect(blackX, y, blackW, rowH);
+      // 顶部高光
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.fillRect(blackX, y, blackW, 1);
+      // 左右侧轻微高光（圆度感）
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(blackX, y, 1, rowH);
+      // 底部前缘阴影线
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(blackX, y + rowH - 1.5, blackW, 1.5);
+    }
+    // C 音名标注（白键左侧）
+    for (let i = 0; i < NOTE_COUNT; i++) {
+      const midi = BASE_MIDI + (NOTE_COUNT - 1 - i);
+      if (midi % 12 !== 0) continue;
+      const y = i * zoomY;
+      ctx.fillStyle = '#3a3a40';
+      ctx.font = `${Math.min(10, Math.max(7, zoomY - 4))}px ui-monospace, monospace`;
+      ctx.fillText(midiToNote(midi), 3, y + zoomY - 3);
     }
   }, [zoomY]);
 

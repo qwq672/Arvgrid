@@ -309,16 +309,27 @@ class SF2Processor extends AudioWorkletProcessor {
 
     this.voices = remaining;
 
-    // 软削波保护：防止多音叠加导致硬削波爆音
-    // x / (1 + |x|) 的近似 — 仅对超过 0.99 的样本做软压缩，零额外开销
+    // 透明软限幅：|s|<0.9 时完全线性无失真，>0.9 平滑趋近 ±0.98（永不硬削波）
+    // 主线程压缩器（limitter）负责主要动态控制；此处仅作防爆音安全网，
+    // 且曲线平滑不产生刺耳谐波——修复"音量调到1%仍爆音"问题（旧版 harsh soft-clip 在主音量前已 baking 失真）
     for (let i = 0; i < blockSize; i++) {
       let s0 = out0[i];
-      if (s0 > 0.99) out0[i] = 0.99 + (s0 - 0.99) * 0.15;
-      else if (s0 < -0.99) out0[i] = -0.99 + (s0 + 0.99) * 0.15;
+      if (s0 > 0.9) {
+        const e = s0 - 0.9;
+        out0[i] = 0.9 + 0.08 * e / (0.08 + e);  // 趋近 0.98
+      } else if (s0 < -0.9) {
+        const e = -s0 - 0.9;
+        out0[i] = -(0.9 + 0.08 * e / (0.08 + e));
+      }
       if (stereo) {
         let s1 = out1[i];
-        if (s1 > 0.99) out1[i] = 0.99 + (s1 - 0.99) * 0.15;
-        else if (s1 < -0.99) out1[i] = -0.99 + (s1 + 0.99) * 0.15;
+        if (s1 > 0.9) {
+          const e = s1 - 0.9;
+          out1[i] = 0.9 + 0.08 * e / (0.08 + e);
+        } else if (s1 < -0.9) {
+          const e = -s1 - 0.9;
+          out1[i] = -(0.9 + 0.08 * e / (0.08 + e));
+        }
       }
     }
 
