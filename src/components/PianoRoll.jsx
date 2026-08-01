@@ -5,8 +5,6 @@ import { useTranslation } from '../lib/i18n';
 
 const BASE_MIDI = 36, NOTE_COUNT = 61;
 const DPR = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-const noteNames = [];
-for (let i = 0; i < NOTE_COUNT; i++) noteNames.push(midiToNote(BASE_MIDI + i));
 
 function parseQ(v) {
   if (!v) return 0.25;
@@ -59,6 +57,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const [clipboard, setClipboard] = useState([]);
   const [marqueeRect, setMarqueeRect] = useState(null);
   const [showGhosts, setShowGhosts] = useState(true);
+  const [snapMode, setSnapMode] = useState(true); // true=网格吸附, false=自由放置
+  const [showArrange, setShowArrange] = useState(false); // P6 编排概览
   const t = useTranslation(lang);
   const maxSecRef = useRef(4);
   const selectedSetRef = useRef(new Set());
@@ -87,6 +87,12 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const selectedNotesRef = useRef(selectedNotes);
   const marqueeRectRef = useRef(marqueeRect);
   const lastMoveTimeRef = useRef(0);
+  const snapModeRef = useRef(snapMode);
+  const keyboardCanvasRef = useRef(null);
+  const longPressTimerRef = useRef(null);
+  const longPressStartRef = useRef(null);
+  const arrangeCanvasRef = useRef(null);
+  const scrollRef = useRef(null);
 
   // 同步 refs
   useEffect(() => { trackRef.current = track; }, [track]);
@@ -102,6 +108,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   useEffect(() => { dragStateRef.current = dragState; }, [dragState]);
   useEffect(() => { selectedNotesRef.current = selectedNotes; }, [selectedNotes]);
   useEffect(() => { marqueeRectRef.current = marqueeRect; }, [marqueeRect]);
+  useEffect(() => { snapModeRef.current = snapMode; }, [snapMode]);
 
   if (!track || !track.notes) return null;
 
@@ -153,6 +160,15 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const gctx = gc.getContext('2d');
     gctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     gctx.clearRect(0, 0, logicalW, logicalH);
+    // 黑键行底纹（DAW 风格：黑键行加深，提升可读性）
+    for (let i = 0; i < NOTE_COUNT; i++) {
+      const midi = BASE_MIDI + (NOTE_COUNT - 1 - i);
+      const isBlack = [1, 3, 6, 8, 10].includes(midi % 12);
+      if (isBlack) {
+        gctx.fillStyle = '#1f1f25';
+        gctx.fillRect(0, i * zy, logicalW, zy);
+      }
+    }
     // 节拍竖线
     const beatSec = 60 / 120;
     const totalBeats = Math.ceil(maxSec / beatSec) + 1;
@@ -168,8 +184,10 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     // 水平横线
     for (let i = 0; i <= NOTE_COUNT; i++) {
       const y = i * zy;
-      if (i % 12 === 0) { gctx.strokeStyle = '#3a3a42'; gctx.lineWidth = 0.8; }
-      else { gctx.strokeStyle = '#2a2a30'; gctx.lineWidth = 0.4; }
+      const midi = BASE_MIDI + (NOTE_COUNT - 1 - i);
+      if (midi % 12 === 0) { gctx.strokeStyle = '#4a4a52'; gctx.lineWidth = 1; }
+      else if ([1, 3, 6, 8, 10].includes(midi % 12)) { gctx.strokeStyle = '#2a2a30'; gctx.lineWidth = 0.3; }
+      else { gctx.strokeStyle = '#33333a'; gctx.lineWidth = 0.4; }
       gctx.beginPath();
       gctx.moveTo(0, y);
       gctx.lineTo(logicalW, y);
@@ -221,6 +239,15 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       }
     } else {
       // 后备：直接绘制（grid effect 还未执行）
+      const startNote = Math.max(0, Math.floor(oy / zy));
+      const endNote = Math.min(NOTE_COUNT, Math.ceil((oy + logicalH) / zy) + 1);
+      for (let i = startNote; i < endNote; i++) {
+        const midi = BASE_MIDI + (NOTE_COUNT - 1 - i);
+        if ([1, 3, 6, 8, 10].includes(midi % 12)) {
+          ctx.fillStyle = '#1f1f25';
+          ctx.fillRect(0, i * zy - oy, logicalW, zy);
+        }
+      }
       const beatSec = 60 / 120;
       const startBeat = Math.max(0, Math.floor(ox / (beatSec * zx)));
       const endBeat = Math.min(Math.ceil(maxSec / beatSec) + 1, Math.ceil((ox + logicalW) / (beatSec * zx)) + 1);
@@ -233,12 +260,11 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
         else { ctx.strokeStyle = '#2c2c34'; ctx.lineWidth = 0.5; }
         ctx.stroke();
       }
-      const startNote = Math.max(0, Math.floor(oy / zy));
-      const endNote = Math.min(NOTE_COUNT, Math.ceil((oy + logicalH) / zy) + 1);
       for (let i = startNote; i <= endNote; i++) {
         const y = i * zy - oy;
-        if (i % 12 === 0) { ctx.strokeStyle = '#3a3a42'; ctx.lineWidth = 0.8; }
-        else { ctx.strokeStyle = '#2a2a30'; ctx.lineWidth = 0.4; }
+        const midi = BASE_MIDI + (NOTE_COUNT - 1 - i);
+        if (midi % 12 === 0) { ctx.strokeStyle = '#4a4a52'; ctx.lineWidth = 1; }
+        else { ctx.strokeStyle = '#33333a'; ctx.lineWidth = 0.4; }
         ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(logicalW, y);
@@ -286,7 +312,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       // 拖动预览：选中的音符应用偏移
       if (dragSet && dragSet.has(n)) {
         pitchIdx = Math.min(Math.max(0, pitchIdx + dragOffset.dPitch), NOTE_COUNT - 1);
-        startSec = Math.max(0, Math.round((n.startSec + dragOffset.dSec) / q) * q);
+        const target = n.startSec + dragOffset.dSec;
+        startSec = snapModeRef.current ? Math.max(0, Math.round(target / q) * q) : Math.max(0, target);
       }
       if (pitchIdx < 0 || pitchIdx >= NOTE_COUNT) continue;
       const x = startSec * zx - ox;
@@ -302,7 +329,11 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       const velAlpha = 0.08 + (n.velocity || 90) / 350;
       ctx.fillStyle = tc.startsWith('#') ? getColorRgba(tc, velAlpha) : `rgba(255,255,255,${velAlpha})`;
       ctx.fillRect(x, y, w, h / 3);
-      if (isSel) { ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, w, h); }
+      // 细描边，让音符更立体
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(x + 0.25, y + 0.25, w - 0.5, h - 0.5);
+      if (isSel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, w, h); }
     }
 
     if (mRect) {
@@ -377,6 +408,99 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [isPlaying, drawPlayhead, getPlaybackTime]);
 
+  // P6 编排概览：所有轨道在同一时间线上的迷你总览
+  const drawArrange = useCallback(() => {
+    const el = arrangeCanvasRef.current;
+    const cont = containerRef.current;
+    if (!el || !cont) return;
+    const w = cont.clientWidth;
+    if (w <= 0) return;
+    // 全局最大时长
+    let gMax = 4;
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const trk = tracks[ti];
+      if (!trk || !trk.notes) continue;
+      for (let ni = 0; ni < trk.notes.length; ni++) {
+        const n = trk.notes[ni];
+        const end = n.startSec + n.durationSec;
+        if (end > gMax) gMax = end;
+      }
+    }
+    const laneH = 11;
+    const pad = 2;
+    const h = tracks.length * laneH + pad * 2;
+    el.width = Math.round(w * DPR);
+    el.height = Math.round(h * DPR);
+    el.style.width = w + 'px';
+    el.style.height = h + 'px';
+    const ctx = el.getContext('2d');
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = '#16161b';
+    ctx.fillRect(0, 0, w, h);
+    const scaleX = w / gMax;
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const trk = tracks[ti];
+      const y0 = pad + ti * laneH;
+      // 当前轨道底色高亮
+      if (trk.id === currentTrackId) {
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        ctx.fillRect(0, y0, w, laneH - 1);
+      }
+      const c = trk.color || '#888';
+      ctx.fillStyle = c;
+      if (trk.notes) {
+        for (let ni = 0; ni < trk.notes.length; ni++) {
+          const n = trk.notes[ni];
+          const x = n.startSec * scaleX;
+          const nw = Math.max(1, n.durationSec * scaleX);
+          ctx.fillRect(x, y0 + 1, nw, laneH - 3);
+        }
+      }
+      // 分隔线
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, y0 + laneH - 0.5);
+      ctx.lineTo(w, y0 + laneH - 0.5);
+      ctx.stroke();
+    }
+    // 当前可视区域矩形
+    const sc = scrollRef.current;
+    if (sc) {
+      const visSec = sc.clientWidth / zoomXRef.current;
+      const startSec = sc.scrollLeft / zoomXRef.current;
+      const vx = startSec * scaleX;
+      const vw = visSec * scaleX;
+      ctx.strokeStyle = 'rgba(204,68,68,0.9)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(vx, 0.5, Math.max(2, vw), h - 1);
+    }
+  }, [tracks, currentTrackId]);
+
+  useEffect(() => {
+    if (showArrange) drawArrange();
+  }, [showArrange, drawArrange, track, zoomX]);
+
+  // 编排概览点击/拖动：水平定位到对应时间
+  const arrangeSeek = useCallback((clientX) => {
+    const el = arrangeCanvasRef.current;
+    const sc = scrollRef.current;
+    if (!el || !sc) return;
+    const rect = el.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    let gMax = 4;
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const trk = tracks[ti];
+      if (!trk || !trk.notes) continue;
+      for (let ni = 0; ni < trk.notes.length; ni++) {
+        const end = trk.notes[ni].startSec + trk.notes[ni].durationSec;
+        if (end > gMax) gMax = end;
+      }
+    }
+    const targetSec = ratio * gMax;
+    sc.scrollLeft = Math.max(0, targetSec * zoomXRef.current - sc.clientWidth / 2);
+  }, [tracks]);
+
   const canvasToLogical = (clientX, clientY) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -390,6 +514,17 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     let pitchIdx = Math.min(Math.max(Math.floor((ly + offsetYRef.current) / zoomY), 0), NOTE_COUNT - 1);
     return { sec: Math.max(0, sec), pitch: midiToNote(BASE_MIDI + (NOTE_COUNT - 1 - pitchIdx)) };
   };
+
+  // 左侧钢琴键盘：点击试听音高
+  const handleKeyboardClick = useCallback((e) => {
+    const el = keyboardCanvasRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const ly = (e.clientY - rect.top) * (el.height / rect.height / DPR);
+    const pitchIdx = Math.min(Math.max(Math.floor(ly / zoomYRef.current), 0), NOTE_COUNT - 1);
+    const midi = BASE_MIDI + (NOTE_COUNT - 1 - pitchIdx);
+    playNoteRef.current(midiToNote(midi), 0.5, 100);
+  }, []);
 
   // 使用空间索引加速音符查找
   const findNoteAtLogical = (lx, ly) => {
@@ -446,9 +581,13 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     if (!canvas) return;
     const point = e.touches ? e.touches[0] : e;
     const { x: lx, y: ly } = canvasToLogical(point.clientX, point.clientY);
-    const mode = editModeRef.current;
+    const isMiddle = !e.touches && e.button === 1; // 中键 = 高效删除（任意模式）
+    const mode = isMiddle ? 'erase' : editModeRef.current;
     const trk = trackRef.current;
     if (!trk || !trk.notes) return;
+
+    // 中键：阻止自动滚动等默认行为
+    if (isMiddle) e.preventDefault();
 
     // 触屏 + 指针模式：允许原生滚动，只在点击音符时选中
     if (mode === 'pointer') {
@@ -456,6 +595,22 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       if (note) {
         e.preventDefault();
         setSelectedNotes(note ? [note] : []);
+      }
+      // 触屏长按：弹出右键菜单（P9）
+      if (e.touches) {
+        const touchPoint = point;
+        longPressStartRef.current = { x: touchPoint.clientX, y: touchPoint.clientY };
+        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = setTimeout(() => {
+          longPressTimerRef.current = null;
+          // 长按触发时选中音符并打开菜单
+          const lp = longPressStartRef.current;
+          if (!lp) return;
+          const { x: lpx, y: lpy } = canvasToLogical(lp.x, lp.y);
+          const lpNote = findNoteAtLogical(lpx, lpy);
+          if (lpNote && !selectedSetRef.current.has(lpNote)) setSelectedNotes([lpNote]);
+          setContextMenu({ visible: true, x: lp.x, y: lp.y });
+        }, 500);
       }
       return;
     }
@@ -466,7 +621,11 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     if (mode === 'draw') {
       const { sec, pitch } = logicalToSecPitch(lx, ly);
       const q = qStepRef.current;
-      const newNote = { pitch, startSec: Math.round(sec / q) * q, durationSec: Math.max(q, 0.05), velocity: 90 };
+      // 吸附模式：音符起点落在光标所在网格线（floor，标准 DAW 行为）
+      // 自由模式：音符起点 = 光标精确位置
+      const startSec = snapModeRef.current ? Math.floor(sec / q) * q : sec;
+      const dur = snapModeRef.current ? Math.max(q, 0.05) : 0.2;
+      const newNote = { pitch, startSec, durationSec: dur, velocity: 90 };
       onNotesChangeRef.current([...trk.notes, newNote].sort((a, b) => a.startSec - b.startSec));
       playNoteRef.current(pitch, 0.3, 90);
       return;
@@ -505,6 +664,15 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   }, []);
 
   const handlePointerMove = useCallback((e) => {
+    // 触屏长按取消：移动超过阈值则取消长按菜单
+    if (e.touches && longPressStartRef.current) {
+      const tp = e.touches[0];
+      const lp = longPressStartRef.current;
+      if (tp && Math.hypot(tp.clientX - lp.x, tp.clientY - lp.y) > 12) {
+        if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
+        longPressStartRef.current = null;
+      }
+    }
     const ds = dragStateRef.current;
     if (!ds.active) return;
 
@@ -528,6 +696,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       const origin = dragOriginRef.current;
       if (!origin) return;
       const dx = lx - origin.startX, dy = ly - origin.startY;
+      // 自由模式：保留亚像素位移；吸附模式：dPitch 仍按行取整
       dragOffsetRef.current = { dSec: dx / zx, dPitch: Math.round(dy / zy) };
       requestRedraw();
     }
@@ -546,6 +715,9 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   }, []);
 
   const handlePointerUp = useCallback(() => {
+    // 清理触屏长按计时器
+    if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
+    longPressStartRef.current = null;
     const ds = dragStateRef.current;
     // P5 优化：拖动结束时一次性提交 move 结果
     if (ds.type === 'move' && dragOriginRef.current) {
@@ -563,9 +735,11 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
             const midi = noteToMidi(n.pitch);
             const oldIdx = NOTE_COUNT - 1 - (midi - BASE_MIDI);
             const newIdx = Math.min(Math.max(0, oldIdx + off.dPitch), NOTE_COUNT - 1);
+            const target = n.startSec + off.dSec;
+            const newStart = snapModeRef.current ? Math.max(0, Math.round(target / q) * q) : Math.max(0, target);
             const newObj = {
               ...n,
-              startSec: Math.max(0, Math.round((n.startSec + off.dSec) / q) * q),
+              startSec: newStart,
               pitch: midiToNote(BASE_MIDI + (NOTE_COUNT - 1 - newIdx)),
             };
             newSel.push(newObj);
@@ -616,6 +790,27 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     if (!trk || !trk.notes) return;
     onNotesChange(trk.notes.map(n => selectedSetRef.current.has(n) ? { ...n, velocity: Math.max(1, Math.min(127, value)) } : n));
   }, [onNotesChange]);
+
+  // 移调（半音为单位）：+12 = 升八度，-12 = 降八度
+  const transposeSelected = useCallback((semitones) => {
+    const trk = trackRef.current;
+    if (!trk || !trk.notes) return;
+    const selSet = selectedSetRef.current;
+    if (selSet.size === 0) return;
+    const newSel = [];
+    const updated = trk.notes.map(n => {
+      if (!selSet.has(n)) return n;
+      const midi = noteToMidi(n.pitch);
+      const newMidi = Math.min(127, Math.max(0, midi + semitones));
+      const newObj = { ...n, pitch: midiToNote(newMidi) };
+      newSel.push(newObj);
+      return newObj;
+    });
+    onNotesChangeRef.current(updated);
+    setSelectedNotes(newSel);
+    // 试听移调后第一个音符
+    if (newSel.length > 0) playNoteRef.current(newSel[0].pitch, 0.3, newSel[0].velocity || 90);
+  }, []);
 
   const copySelected = useCallback(() => {
     if (selectedNotes.length === 0) return;
@@ -690,6 +885,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     window.addEventListener('mouseup', handlePointerUp);
     window.addEventListener('touchend', handlePointerUp);
     return () => {
+      if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
       canvas.removeEventListener('mousedown', handlePointerDown);
       canvas.removeEventListener('touchstart', handlePointerDown);
       canvas.removeEventListener('contextmenu', handleContextMenu);
@@ -740,23 +936,45 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     };
   }, []);
 
-  // 键盘标签画布 - 只在 zoomY 变化时重绘
-  const keyLabelCanvasRef = useCallback((el) => {
+  // 钢琴键盘画布 - 绘制黑白键 + 音名，仅在 zoomY 变化时重绘
+  const KEY_W = 56;
+  useEffect(() => {
+    const el = keyboardCanvasRef.current;
     if (!el) return;
-    const logicalW = 38;
     const logicalH = NOTE_COUNT * zoomY;
-    el.width = Math.round(logicalW * DPR);
+    el.width = Math.round(KEY_W * DPR);
     el.height = Math.round(logicalH * DPR);
-    el.style.width = logicalW + 'px';
+    el.style.width = KEY_W + 'px';
     el.style.height = logicalH + 'px';
     const ctx = el.getContext('2d');
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    ctx.clearRect(0, 0, logicalW, logicalH);
-    ctx.fillStyle = '#6a6a70';
-    ctx.font = '9px monospace';
+    ctx.clearRect(0, 0, KEY_W, logicalH);
+    const blackW = 26;
     for (let i = 0; i < NOTE_COUNT; i++) {
+      const midi = BASE_MIDI + (NOTE_COUNT - 1 - i);
       const y = i * zoomY;
-      ctx.fillText(noteNames[NOTE_COUNT - 1 - i], 2, y + 11);
+      const isBlack = [1, 3, 6, 8, 10].includes(midi % 12);
+      if (isBlack) {
+        // 黑键：右侧短块
+        ctx.fillStyle = '#15151a';
+        ctx.fillRect(KEY_W - blackW, y, blackW, Math.max(1, zoomY - 0.5));
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(KEY_W - blackW, y, blackW, Math.max(1, zoomY - 0.5));
+      } else {
+        // 白键
+        ctx.fillStyle = '#e9e9ee';
+        ctx.fillRect(0, y, KEY_W, Math.max(1, zoomY - 0.5));
+        ctx.strokeStyle = '#9a9aa0';
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(0, y, KEY_W, Math.max(1, zoomY - 0.5));
+      }
+      // C 音名标注
+      if (midi % 12 === 0) {
+        ctx.fillStyle = isBlack ? '#888' : '#333';
+        ctx.font = `${Math.min(10, Math.max(7, zoomY - 4))}px monospace`;
+        ctx.fillText(midiToNote(midi), 3, y + zoomY - 3);
+      }
     }
   }, [zoomY]);
 
@@ -775,16 +993,49 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
         >
           Ghost
         </button>
+        <button
+          onClick={() => setSnapMode(s => !s)}
+          className={snapMode ? 'active' : ''}
+          title={lang === 'zh' ? (snapMode ? '吸附：网格（点击关闭自由放置）' : '吸附：自由（点击开启网格吸附）') : (snapMode ? 'Snap: Grid (click for free)' : 'Snap: Free (click for grid)')}
+          style={{ padding: '2px 6px', fontSize: '0.65rem' }}
+        >
+          {snapMode ? (lang === 'zh' ? '吸附' : 'Snap') : (lang === 'zh' ? '自由' : 'Free')}
+        </button>
+        <button
+          onClick={() => setShowArrange(s => !s)}
+          className={showArrange ? 'active' : ''}
+          title={lang === 'zh' ? (showArrange ? '隐藏编排概览' : '显示编排概览（所有轨道同时间线）') : (showArrange ? 'Hide arrangement' : 'Show arrangement overview')}
+          style={{ padding: '2px 6px', fontSize: '0.65rem' }}
+        >
+          {lang === 'zh' ? '编排' : 'Arrng'}
+        </button>
         <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
           {selectedNotes.length > 0 ? `${selectedNotes.length} ${lang === 'zh' ? '个音符' : ' notes'}` : ''}
         </span>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
-        <div style={{ width: 38, flexShrink: 0, background: 'var(--track-bg)', borderRight: '1px solid var(--border)', overflow: 'hidden' }}>
-          <canvas ref={keyLabelCanvasRef} style={{ display: 'block' }} />
+      {/* P6 编排概览：所有轨道同时间线迷你总览 */}
+      {showArrange && (
+        <div style={{ flexShrink: 0, borderBottom: '1px solid var(--border)', background: '#16161b', position: 'relative' }}>
+          <canvas
+            ref={arrangeCanvasRef}
+            style={{ display: 'block', cursor: 'pointer' }}
+            onMouseDown={(e) => arrangeSeek(e.clientX)}
+          />
         </div>
-        <div className="piano-roll-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0, position: 'relative' }} onScroll={(e) => { offsetXRef.current = e.target.scrollLeft; offsetYRef.current = e.target.scrollTop; requestRedraw(); }}>
+      )}
+
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+        <div style={{ width: KEY_W, flexShrink: 0, background: 'var(--track-bg)', borderRight: '1px solid var(--border)', overflow: 'hidden', position: 'relative' }}>
+          <canvas ref={keyboardCanvasRef} style={{ display: 'block', cursor: 'pointer', transform: 'translateY(0px)' }} onMouseDown={handleKeyboardClick} onTouchStart={(e) => { if (e.touches[0]) handleKeyboardClick(e.touches[0]); }} />
+        </div>
+        <div className="piano-roll-scroll" ref={scrollRef} style={{ flex: 1, overflow: 'auto', minHeight: 0, position: 'relative' }} onScroll={(e) => {
+          offsetXRef.current = e.target.scrollLeft;
+          offsetYRef.current = e.target.scrollTop;
+          if (keyboardCanvasRef.current) keyboardCanvasRef.current.style.transform = `translateY(${-e.target.scrollTop}px)`;
+          requestRedraw();
+          if (showArrange) drawArrange();
+        }}>
           <canvas ref={canvasRef} width={800} height={300} style={{ display: 'block', touchAction: editMode === 'pointer' ? 'pan-x pan-y' : 'none' }} />
           <canvas ref={playheadCanvasRef} width={800} height={300} style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
         </div>
@@ -792,7 +1043,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
 
       {contextMenu.visible && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 999 }} onClick={closeCM} onContextMenu={e => { e.preventDefault(); closeCM(); }}>
-          <div style={{ position: 'fixed', top: Math.min(contextMenu.y, window.innerHeight - 260), left: Math.min(contextMenu.x, window.innerWidth - 150), background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 1000, minWidth: 140, padding: 4, boxShadow: '0 4px 16px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
+          <div style={{ position: 'fixed', top: Math.min(contextMenu.y, window.innerHeight - 380), left: Math.min(contextMenu.x, window.innerWidth - 170), background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 1000, minWidth: 160, padding: 4, boxShadow: '0 4px 16px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', padding: '4px 8px', borderBottom: '1px solid var(--border)', marginBottom: 3 }}>
               {selectedNotes.length > 0 ? `${selectedNotes.length} ${lang === 'zh' ? '个音符' : ' notes'}` : ''}
             </div>
@@ -813,6 +1064,19 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
                   style={{ width: '100%', cursor: 'pointer' }} />
               </div>
             )}
+            <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
+            {/* 移调 */}
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', padding: '4px 8px 2px' }}>{lang === 'zh' ? '移调' : 'Transpose'}</div>
+            <div style={{ display: 'flex', gap: 3, padding: '0 8px 4px' }}>
+              <button onClick={() => transposeSelected(-12)} style={{ flex: 1, padding: '4px 0', fontSize: '0.68rem', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--track-bg)', color: 'var(--text)' }}>-8va</button>
+              <button onClick={() => transposeSelected(-1)} style={{ flex: 1, padding: '4px 0', fontSize: '0.68rem', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--track-bg)', color: 'var(--text)' }}>−1</button>
+              <button onClick={() => transposeSelected(1)} style={{ flex: 1, padding: '4px 0', fontSize: '0.68rem', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--track-bg)', color: 'var(--text)' }}>+1</button>
+              <button onClick={() => transposeSelected(12)} style={{ flex: 1, padding: '4px 0', fontSize: '0.68rem', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--track-bg)', color: 'var(--text)' }}>+8va</button>
+            </div>
+            <div style={{ display: 'flex', gap: 3, padding: '0 8px 4px', alignItems: 'center' }}>
+              <input type="number" id="transpose-input" defaultValue="0" style={{ width: 50, fontSize: '0.7rem', padding: '2px 4px' }} onMouseDown={e => e.stopPropagation()} placeholder="±N" />
+              <button onClick={() => { const inp = document.getElementById('transpose-input'); const v = parseInt(inp?.value); if (!isNaN(v) && v !== 0) transposeSelected(v); }} style={{ flex: 1, padding: '4px 0', fontSize: '0.68rem', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--track-bg)', color: 'var(--text)' }}>{lang === 'zh' ? '应用' : 'Apply'}</button>
+            </div>
             <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
             <button onClick={copySelected} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>{t.copy}</button>
             <button onClick={cutSelected} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>{t.cut}</button>

@@ -96,11 +96,11 @@ export function useAudioEngine() {
 
     // 添加动态压缩器防止爆音
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = -24; // 阈值 (dB)
-    compressor.knee.value = 30; // 拐点范围
-    compressor.ratio.value = 12; // 压缩比
-    compressor.attack.value = 0.003; // 攻击时间
-    compressor.release.value = 0.25; // 释放时间
+    compressor.threshold.value = -12; // 阈值 (dB) — 更低阈值捕获更多峰值
+    compressor.knee.value = 12; // 拐点范围 — 较硬拐点
+    compressor.ratio.value = 20; // 压缩比 — 接近限制器
+    compressor.attack.value = 0.001; // 攻击时间 — 1ms 快速响应瞬态
+    compressor.release.value = 0.1; // 释放时间
     compressorRef.current = compressor;
 
     // 示波器分析器节点 - 插入在 compressor 和 destination 之间
@@ -233,14 +233,15 @@ export function useAudioEngine() {
   }
 
   // 调度合成器音符 - 返回所有创建的节点用于后续清理
-  function scheduleSynthNote(whenSec, pitch, duration, velocity, program) {
+  // trackVol: 0-1 通道音量缩放（P2 防爆音）
+  function scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol = 1) {
     const ctx = audioCtxRef.current;
     if (!ctx) return null;
 
     const preset = getOscillatorPreset(program) || getOscillatorPreset(0);
     const midi = noteToMidi(pitch);
     const freq = 440 * Math.pow(2, (midi - 69) / 12);
-    const vol = (velocity / 127) * 0.2;
+    const vol = (velocity / 127) * 0.2 * trackVol;
 
     if (preset.isDrum) {
       return scheduleDrumSound(whenSec, preset, vol, duration);
@@ -426,15 +427,15 @@ export function useAudioEngine() {
     return { oscillators, sources, allNodes, stopTime: stopT };
   }
 
-  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum, batchBuffer) {
+  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum, batchBuffer, trackVol = 1) {
     const ctx = audioCtxRef.current;
     if (!ctx || !sf2DataRef.current) {
-      return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
+      return scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol);
     }
 
     // worklet 未就绪时回退到合成器
     if (!workletReadyRef.current || !workletNodeRef.current) {
-      return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
+      return scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol);
     }
 
     const midi = noteToMidi(pitch);
@@ -451,10 +452,14 @@ export function useAudioEngine() {
               || presets.find(p => p.bank === 128)
               || presets.find(p => p.program === program);
       } else {
-        // 旋律乐器：优先 bank 0
+        // 旋律乐器：优先 bank 0 精确匹配，然后非鼓组同 program，
+        // 最后回退到 Acoustic Grand Piano (program 0, bank 0) 而非 presets[0]（可能是鼓组）
         preset = presets.find(p => p.program === program && p.bank === 0)
               || presets.find(p => p.program === program && p.bank !== 128)
               || presets.find(p => p.program === program)
+              || presets.find(p => p.bank === 0 && p.program === 0)
+              || presets.find(p => p.bank === 0)
+              || presets.find(p => p.bank !== 128)
               || presets[0];
       }
       if (preset) {
@@ -463,7 +468,7 @@ export function useAudioEngine() {
     }
 
     if (!preset || !preset.sampleIndex) {
-      return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
+      return scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol);
     }
 
     // 使用预建的 sampleIndex 数组进行 O(1) 查找
@@ -483,12 +488,12 @@ export function useAudioEngine() {
     }
 
     if (!bestSample) {
-      return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
+      return scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol);
     }
 
     // 样本数据未传输到 worklet（应在 loadSF2 时已传输），回退到合成器
     if (bestSample.workletSampleId === undefined) {
-      return scheduleSynthNote(whenSec, pitch, duration, velocity, program);
+      return scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol);
     }
 
     // 发送 noteOn 消息到 worklet，由音频线程完成样本读取、变调、包络、混音
@@ -505,6 +510,7 @@ export function useAudioEngine() {
       coarseTune: bestSample.coarseTune || 0,
       fineTune: bestSample.fineTune || 0,
       pitchCorrection: bestSample.pitchCorrection || 0,
+      gainScale: trackVol,
       isDrum: !!isDrum,
     };
     if (batchBuffer) {
@@ -671,17 +677,18 @@ export function useAudioEngine() {
       let group = null;
       if (src === 'network' && instrumentRef.current) {
         const delayMs = Math.max(0, (whenSec - now) * 1000);
+        const tv = ev.trackVol ?? 1;
         const tid = setTimeout(() => {
           if (isPlayingRef.current && !isPausedRef.current) {
-            const v = (ev.velocity / 127) * 0.5;
+            const v = (ev.velocity / 127) * 0.5 * tv;
             instrumentRef.current.play(ev.pitch, ctx.currentTime, { gain: v, duration: ev.duration });
           }
         }, delayMs);
         scheduledTimeoutsRef.current.push(tid);
       } else if (src === 'sf2' && sf2DataRef.current) {
-        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum, sf2BatchBuffer);
+        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum, sf2BatchBuffer, ev.trackVol ?? 1);
       } else {
-        group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program);
+        group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.trackVol ?? 1);
       }
 
       if (group) {
@@ -721,7 +728,8 @@ export function useAudioEngine() {
   }, []);
 
   // 即时播放一个音符（用于试听）
-  const playNote = useCallback(async (pitch, duration, velocity, program = 0, isDrum = false) => {
+  // trackVol: 0-1 通道音量缩放（可选，P2）
+  const playNote = useCallback(async (pitch, duration, velocity, program = 0, isDrum = false, trackVol = 1) => {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
     if (ctx.state === 'suspended') await ctx.resume();
@@ -731,12 +739,12 @@ export function useAudioEngine() {
 
     let group = null;
     if (src === 'network' && instrumentRef.current) {
-      const vol = (velocity / 127) * 0.5;
+      const vol = (velocity / 127) * 0.5 * trackVol;
       instrumentRef.current.play(pitch, when, { gain: vol, duration });
     } else if (src === 'sf2' && sf2DataRef.current) {
-      group = scheduleSF2Sample(when, pitch, duration, velocity, program, isDrum);
+      group = scheduleSF2Sample(when, pitch, duration, velocity, program, isDrum, null, trackVol);
     } else {
-      group = scheduleSynthNote(when, pitch, duration, velocity, program);
+      group = scheduleSynthNote(when, pitch, duration, velocity, program, trackVol);
     }
 
     // 试听音符也需要跟踪并在结束后清理
@@ -795,6 +803,8 @@ export function useAudioEngine() {
     let events = [];
     tracks.forEach(track => {
       if (track.mute) return;
+      // P2 通道音量：0-100 映射为 0-1 增益缩放，用于防止多轨叠加爆音
+      const trackVol = Math.max(0, Math.min(1, (track.volume ?? 80) / 100));
       track.notes.forEach(note => {
         events.push({
           time: note.startSec,
@@ -803,6 +813,7 @@ export function useAudioEngine() {
           velocity: note.velocity,
           program: track.program,
           isDrum: track.isDrum || false,
+          trackVol,
         });
       });
     });

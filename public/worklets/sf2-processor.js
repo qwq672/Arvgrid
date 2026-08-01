@@ -97,8 +97,9 @@ class SF2Processor extends AudioWorkletProcessor {
     const ctxRate = sampleRate;
 
     // peakGain：Int16 样本需预乘 _INV_32768 转为 Float 范围
-    // 这个预乘在 voice 创建时一次完成，内循环零额外开销
-    let peakGain = (msg.velocity / 127) * 0.12;
+    // 0.08 per voice，配合软削波和压缩器防止多音叠加爆音
+    // gainScale: 通道音量（P2），0-1 缩放每轨增益防止多轨叠加爆音
+    let peakGain = (msg.velocity / 127) * 0.08 * (msg.gainScale ?? 1);
     if (sample.isInt16) peakGain *= _INV_32768;
 
     const isDrum = !!msg.isDrum;
@@ -307,6 +308,20 @@ class SF2Processor extends AudioWorkletProcessor {
     }
 
     this.voices = remaining;
+
+    // 软削波保护：防止多音叠加导致硬削波爆音
+    // x / (1 + |x|) 的近似 — 仅对超过 0.99 的样本做软压缩，零额外开销
+    for (let i = 0; i < blockSize; i++) {
+      let s0 = out0[i];
+      if (s0 > 0.99) out0[i] = 0.99 + (s0 - 0.99) * 0.15;
+      else if (s0 < -0.99) out0[i] = -0.99 + (s0 + 0.99) * 0.15;
+      if (stereo) {
+        let s1 = out1[i];
+        if (s1 > 0.99) out1[i] = 0.99 + (s1 - 0.99) * 0.15;
+        else if (s1 < -0.99) out1[i] = -0.99 + (s1 + 0.99) * 0.15;
+      }
+    }
+
     return true;
   }
 }

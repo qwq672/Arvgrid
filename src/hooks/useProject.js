@@ -3,6 +3,13 @@ import { useState, useCallback } from 'react';
 let nextId = 1;
 function generateId() { return nextId++; }
 
+// 音轨自动配色调色板
+export const TRACK_COLORS = [
+  '#4a9eff', '#ff6b6b', '#51cf66', '#ffd43b', '#cc5de8',
+  '#ff922b', '#22b8cf', '#e64980', '#94d82d', '#5c7cfa',
+  '#f06595', '#fcc419', '#20c997', '#845ef7', '#ff8787',
+];
+
 // 本地存储键名
 export const AUTOSAVE_KEY = 'arvgrid_autosave';
 export const RECENT_PROJECTS_KEY = 'arvgrid_recent_projects';
@@ -207,10 +214,18 @@ export function useProject() {
       volume: t.volume || 80,
       pan: t.pan || 64,
       mute: t.mute || false,
+      group: t.group || '',
+      reverb: t.reverb || 0,
+      color: t.color || TRACK_COLORS[idx % TRACK_COLORS.length],
     }));
     setTracks(newTracks);
     setBpm(midiData.bpm || 120);
-    setMeta(prev => ({ ...prev, title: midiData.title || "", copyright: midiData.copyright || "" }));
+    // 保留已有 meta，仅用 MIDI 数据补充（不清空已有值）
+    setMeta(prev => ({
+      ...prev,
+      title: midiData.title || prev.title || '',
+      copyright: midiData.copyright || prev.copyright || '',
+    }));
     setCurrentTrackId(newTracks[0]?.id);
   }, [pushUndo]);
 
@@ -224,14 +239,15 @@ export function useProject() {
     const newTracks = midiData.tracks.map((t, idx) => ({
       id: generateId(),
       name: t.name || `Track ${idx+1}`,
-      color: t.color,
+      color: t.color || TRACK_COLORS[(tracks.length + idx) % TRACK_COLORS.length],
       program: t.program || 0,
       isDrum: t.isDrum || false,
       notes: Array.isArray(t.notes) ? t.notes : [],
       volume: t.volume || 80,
       pan: t.pan || 64,
       mute: t.mute || false,
-      comment: t.comment || '',
+      group: t.group || '',
+      reverb: t.reverb || 0,
     }));
     setTracks(prev => [...prev, ...newTracks]);
     if (newTracks.length > 0) {
@@ -246,7 +262,7 @@ export function useProject() {
       v: 2, // 格式版本
       tracks: tracks.map(t => ({
         id: t.id, n: t.name, p: t.program, v: t.volume, pn: t.pan,
-        m: t.mute ? 1 : 0, g: t.group || '', r: t.reverb || 0,
+        m: t.mute ? 1 : 0, g: t.group || '', r: t.reverb || 0, c: t.color || '',
         notes: t.notes.map(n => ({
           p: n.pitch,
           s: Math.round(n.startSec * 1000) / 1000,
@@ -273,10 +289,11 @@ export function useProject() {
     if (raw.v === 2) {
       // 紧凑格式：展开短键名
       data = {
-        tracks: raw.tracks.map(t => ({
+        tracks: raw.tracks.map((t, idx) => ({
           id: t.id, name: t.n || t.name || 'Track', program: t.p ?? t.program ?? 0,
           volume: t.v ?? t.volume ?? 80, pan: t.pn ?? t.pan ?? 64,
           mute: !!(t.m ?? t.mute), group: t.g ?? t.group ?? '', reverb: t.r ?? t.reverb ?? 0,
+          color: t.c || t.color || TRACK_COLORS[idx % TRACK_COLORS.length],
           notes: t.notes.map(n => ({
             pitch: n.p ?? n.pitch,
             startSec: n.s ?? n.startSec ?? 0,

@@ -138,6 +138,29 @@ const GM_INSTRUMENTS = [
   { id: 127, zh: "枪声", en: "Gunshot" }
 ];
 
+// GM 乐器 id -> 名称映射，用于轨道列表显示乐器名（而非编号）
+const GM_BY_ID = new Map(GM_INSTRUMENTS.map(i => [i.id, i]));
+
+// GM 乐器分类（每类 8 个乐器），用于乐器选择界面分组
+const GM_CATEGORIES = [
+  { zh: '钢琴', en: 'Piano' },
+  { zh: '色彩打击乐', en: 'Chromatic Percussion' },
+  { zh: '风琴', en: 'Organ' },
+  { zh: '吉他', en: 'Guitar' },
+  { zh: '贝司', en: 'Bass' },
+  { zh: '弦乐', en: 'Strings' },
+  { zh: '合奏', en: 'Ensemble' },
+  { zh: '铜管', en: 'Brass' },
+  { zh: '簧管', en: 'Reed' },
+  { zh: '管乐', en: 'Pipe' },
+  { zh: '合成主音', en: 'Synth Lead' },
+  { zh: '合成音垫', en: 'Synth Pad' },
+  { zh: '合成效果', en: 'Synth Effects' },
+  { zh: '民族', en: 'Ethnic' },
+  { zh: '打击乐', en: 'Percussive' },
+  { zh: '音效', en: 'Sound Effects' },
+];
+
 export default function TrackPanel({
   tracks, currentTrackId, onSelectTrack, onAddTrack, onDeleteTrack,
   onVolumeChange, onPanChange, onMuteToggle, onProgramChange,
@@ -169,6 +192,25 @@ export default function TrackPanel({
 
   const closeInstPanel = () => { setInstPanel(null); setInstSearch(''); };
 
+  // 渲染单条乐器行
+  const renderInstRow = (inst) => {
+    const track = tracks.find(t => t.id === instPanel);
+    const isCur = track?.program === inst.id;
+    return (
+      <div key={inst.id} style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '5px 8px', background: isCur ? 'var(--track-hover)' : 'transparent',
+        borderRadius: 4, cursor: 'pointer', fontSize: '0.72rem',
+        border: isCur ? '1px solid var(--text-muted)' : '1px solid transparent',
+      }} onClick={() => { onProgramChange(instPanel, inst.id); closeInstPanel(); }}>
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><strong>{inst.id}</strong>: {inst[lang] || inst.zh} / {inst.en}</span>
+        <button onClick={e => handlePreview(e, inst.id)} style={{ padding: '2px 6px', fontSize: '0.65rem', flexShrink: 0, background: previewId === inst.id ? 'var(--accent-hover)' : undefined }}>
+          {t.preview}
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div style={{ width: 260, flexShrink: 0, flexDirection: 'column', background: 'var(--panel)', borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', display: 'flex' }}>
       {/* 头部 */}
@@ -198,19 +240,23 @@ export default function TrackPanel({
                 borderLeftWidth: 3, borderLeftStyle: 'solid', borderLeftColor: color, cursor: 'pointer',
               }}>
                 {/* 名称行 */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3, gap: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flex: 1 }}>
+                    <span title={color} style={{ width: 10, height: 10, borderRadius: '50%', background: color, border: '1px solid rgba(0,0,0,0.3)', flexShrink: 0, display: 'inline-block' }} />
                     {track.group && (
                       <span style={{
                         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                         width: 16, height: 16, borderRadius: 3,
                         background: GROUP_TINTS[track.group], border: '1px solid var(--border)',
                         fontSize: '0.6rem', fontWeight: 700, color: 'var(--text-muted)',
+                        flexShrink: 0,
                       }}>{track.group}</span>
                     )}
-                    <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>{track.name || `Track ${track.id}`}</span>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.name || `Track ${track.id}`}</span>
                   </div>
-                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>P{track.program}</span>
+                  <span title={`P${track.program}`} style={{ fontSize: '0.6rem', color: 'var(--text-muted)', flexShrink: 0, maxWidth: 92, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {track.isDrum ? (lang === 'zh' ? '鼓组' : 'Drums') : (GM_BY_ID.get(track.program)?.[lang] || `P${track.program}`)}
+                  </span>
                 </div>
                 {/* 控制行 */}
                 <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -323,23 +369,24 @@ export default function TrackPanel({
                 style={{ width: '100%', fontSize: '0.75rem' }} />
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: 6 }}>
-              {filtered.map(inst => {
-                const track = tracks.find(t => t.id === instPanel);
-                const isCur = track?.program === inst.id;
-                return (
-                  <div key={inst.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '5px 8px', background: isCur ? 'var(--track-hover)' : 'transparent',
-                    borderRadius: 4, cursor: 'pointer', fontSize: '0.72rem',
-                    border: isCur ? '1px solid var(--text-muted)' : '1px solid transparent',
-                  }} onClick={() => { onProgramChange(instPanel, inst.id); closeInstPanel(); }}>
-                    <span style={{ flex: 1 }}><strong>{inst.id}</strong>: {inst.zh} / {inst.en}</span>
-                    <button onClick={e => handlePreview(e, inst.id)} style={{ padding: '2px 6px', fontSize: '0.65rem', background: previewId === inst.id ? 'var(--accent-hover)' : undefined }}>
-                      {t.preview}
-                    </button>
-                  </div>
-                );
-              })}
+              {instSearch ? (
+                /* 搜索时：扁平列表 */
+                filtered.map(renderInstRow)
+              ) : (
+                /* 非搜索：按 GM 分类分组显示 */
+                GM_CATEGORIES.map((cat, ci) => {
+                  const start = ci * 8;
+                  const insts = GM_INSTRUMENTS.slice(start, start + 8);
+                  return (
+                    <div key={ci} style={{ marginBottom: 4 }}>
+                      <div style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--text-muted)', padding: '5px 8px 3px', letterSpacing: 0.3, textTransform: 'uppercase', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'var(--panel)', zIndex: 1 }}>
+                        {cat[lang] || cat.zh}
+                      </div>
+                      {insts.map(renderInstRow)}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>

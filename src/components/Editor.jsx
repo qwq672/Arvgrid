@@ -48,7 +48,8 @@ const Editor = memo(({
 
   const handlePlayNote = useCallback((pitch, duration, velocity) => {
     if (currentTrack) {
-      playNote(pitch, duration, velocity, currentTrack.program, currentTrack.isDrum);
+      const tv = Math.max(0, Math.min(1, (currentTrack.volume ?? 80) / 100));
+      playNote(pitch, duration, velocity, currentTrack.program, currentTrack.isDrum, tv);
     }
   }, [currentTrack, playNote]);
 
