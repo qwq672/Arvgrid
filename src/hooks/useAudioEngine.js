@@ -3,8 +3,11 @@ import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
 
 // 前瞻调度器默认参数
-const MAX_POLYPHONY = 32; // 复音数上限
+const MAX_POLYPHONY = 32; // 复音数上限（仅限主线程合成器路径）
 const MIN_POLYPHONY = 12; // 自适应降级下限
+// SF2 worklet 运行在音频线程，复音数与主线程负载无关，独立设高值
+// 避免"主线程卡顿→adaptivePolyphony 下降→worklet voice stealing→音符丢失"的回归
+const WORKLET_POLYPHONY = 128;
 
 // 检测设备 CPU 核心数，用于初始化复音数
 const CPU_CORES = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
@@ -105,7 +108,7 @@ export function useAudioEngine() {
 
     // 示波器分析器节点 - 插入在 compressor 和 destination 之间
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 2048; // 足够的采样点用于平滑波形显示
+    analyser.fftSize = 1024; // 降低每帧遍历开销（2048→1024 减半）
     analyser.smoothingTimeConstant = 0.8;
     master.connect(compressor);
     compressor.connect(analyser);
@@ -176,7 +179,9 @@ export function useAudioEngine() {
     // 注册 SF2 AudioWorklet：单 processor 实例 + 内部 voice pool
     // 替代每个音符创建 BufferSource+Gain 的节点模型，100 同时发声从 200+ 节点降为 1 节点
     try {
-      const workletUrl = new URL('worklets/sf2-processor.js', location.href).href;
+      // 加版本号查询串强制浏览器加载最新 worklet 代码（worklet 模块会被强缓存，
+      // 旧版 harsh soft-clip 代码不更新会导致"音量调到1%仍爆音"问题）
+      const workletUrl = new URL('worklets/sf2-processor.js?v=3', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,
@@ -186,10 +191,10 @@ export function useAudioEngine() {
       workletNode.connect(noteBus);
       workletNodeRef.current = workletNode;
       workletReadyRef.current = true;
-      // 初始复音数同步到 worklet
+      // 初始复音数同步到 worklet（音频线程独立高复音，不受主线程自适应降级影响）
       workletNode.port.postMessage({
         type: 'set-polyphony',
-        value: adaptivePolyphonyRef.current,
+        value: WORKLET_POLYPHONY,
       });
     } catch (err) {
       console.warn('AudioWorklet 加载失败，SF2 播放将受影响:', err);
@@ -637,13 +642,8 @@ export function useAudioEngine() {
         }
       }
       setPerformanceInfo(prev => (prev.level === level ? prev : { level, mem }));
-      // 同步复音数到 worklet（worklet 内部 voice pool 据此进行 voice stealing）
-      if (polyphonyChanged && workletReadyRef.current && workletNodeRef.current) {
-        workletNodeRef.current.port.postMessage({
-          type: 'set-polyphony',
-          value: adaptivePolyphonyRef.current,
-        });
-      }
+      // worklet 复音数独立于主线程自适应（音频线程负载与主线程无关），
+      // 不再随 adaptivePolyphony 下降而触发 voice stealing 丢音符
     }
 
     // 清理已完成的节点组 - 原地修改避免 GC
@@ -671,7 +671,7 @@ export function useAudioEngine() {
       // 复音数限制（自适应）
       // SF2 模式下 worklet 内部管理 voice stealing，placeholder group 很轻量，
       // 允许大量待播放音符入队，避免密集音符被跳过
-      const polyLimit = (src === 'sf2') ? Math.max(256, adaptivePolyphonyRef.current * 8) : adaptivePolyphonyRef.current;
+      const polyLimit = (src === 'sf2') ? 512 : adaptivePolyphonyRef.current;
       if (groups.length >= polyLimit) break;
 
       let group = null;

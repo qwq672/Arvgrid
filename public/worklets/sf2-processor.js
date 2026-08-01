@@ -97,9 +97,9 @@ class SF2Processor extends AudioWorkletProcessor {
     const ctxRate = sampleRate;
 
     // peakGain：Int16 样本需预乘 _INV_32768 转为 Float 范围
-    // 0.08 per voice，配合软削波和压缩器防止多音叠加爆音
+    // 0.05 per voice，配合透明软限幅和压缩器防止多音叠加爆音
     // gainScale: 通道音量（P2），0-1 缩放每轨增益防止多轨叠加爆音
-    let peakGain = (msg.velocity / 127) * 0.08 * (msg.gainScale ?? 1);
+    let peakGain = (msg.velocity / 127) * 0.05 * (msg.gainScale ?? 1);
     if (sample.isInt16) peakGain *= _INV_32768;
 
     const isDrum = !!msg.isDrum;
