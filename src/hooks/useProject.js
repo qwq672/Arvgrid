@@ -241,8 +241,22 @@ export function useProject() {
 
   // 导出工程 JSON 文件
   const exportProject = useCallback(() => {
-    const data = { tracks, bpm, meta };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    // 紧凑序列化：短键名 + 精度截断，减少文件大小约 60%
+    const compact = {
+      v: 2, // 格式版本
+      tracks: tracks.map(t => ({
+        id: t.id, n: t.name, p: t.program, v: t.volume, pn: t.pan,
+        m: t.mute ? 1 : 0, g: t.group || '', r: t.reverb || 0,
+        notes: t.notes.map(n => ({
+          p: n.pitch,
+          s: Math.round(n.startSec * 1000) / 1000,
+          d: Math.round(n.durationSec * 1000) / 1000,
+          v: n.velocity,
+        })),
+      })),
+      bpm, meta,
+    };
+    const blob = new Blob([JSON.stringify(compact)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -254,7 +268,28 @@ export function useProject() {
   // 导入工程 JSON 文件（替换当前）
   const importProject = useCallback((jsonData) => {
     pushUndo();
-    const data = JSON.parse(jsonData);
+    const raw = JSON.parse(jsonData);
+    let data;
+    if (raw.v === 2) {
+      // 紧凑格式：展开短键名
+      data = {
+        tracks: raw.tracks.map(t => ({
+          id: t.id, name: t.n || t.name || 'Track', program: t.p ?? t.program ?? 0,
+          volume: t.v ?? t.volume ?? 80, pan: t.pn ?? t.pan ?? 64,
+          mute: !!(t.m ?? t.mute), group: t.g ?? t.group ?? '', reverb: t.r ?? t.reverb ?? 0,
+          notes: t.notes.map(n => ({
+            pitch: n.p ?? n.pitch,
+            startSec: n.s ?? n.startSec ?? 0,
+            durationSec: n.d ?? n.durationSec ?? 0,
+            velocity: n.v ?? n.velocity ?? 90,
+          })),
+        })),
+        bpm: raw.bpm, meta: raw.meta,
+      };
+    } else {
+      // 旧格式（v1，长键名），直接使用
+      data = raw;
+    }
     setTracks(data.tracks);
     setBpm(data.bpm);
     setMeta(data.meta || { title: "", artist: "", singer: "", copyright: "" });

@@ -75,6 +75,7 @@ export function useAudioEngine() {
   const [performanceInfo, setPerformanceInfo] = useState({ level: 'low', mem: 0 });
   const schedulerLagCountRef = useRef(0);
   const lastPerfUpdateRef = useRef(0); // 节流性能更新
+  const lastPerfLevelRef = useRef('low'); // 仅在 level 变化时触发 re-render
   const adaptivePolyphonyRef = useRef(INITIAL_POLYPHONY); // 自适应复音数（根据 CPU 核心数初始化）
   const noteBusRef = useRef(null); // 共享音符总线，减少每个音符的连接数
   const workletNodeRef = useRef(null); // SF2 AudioWorkletNode（单节点替代所有 per-note 节点）
@@ -629,7 +630,7 @@ export function useAudioEngine() {
           polyphonyChanged = true;
         }
       }
-      setPerformanceInfo({ level, mem });
+      setPerformanceInfo(prev => (prev.level === level ? prev : { level, mem }));
       // 同步复音数到 worklet（worklet 内部 voice pool 据此进行 voice stealing）
       if (polyphonyChanged && workletReadyRef.current && workletNodeRef.current) {
         workletNodeRef.current.port.postMessage({
@@ -662,7 +663,10 @@ export function useAudioEngine() {
       if (whenSec > lookahead) break;
 
       // 复音数限制（自适应）
-      if (groups.length >= adaptivePolyphonyRef.current) break;
+      // SF2 模式下 worklet 内部管理 voice stealing，placeholder group 很轻量，
+      // 允许大量待播放音符入队，避免密集音符被跳过
+      const polyLimit = (src === 'sf2') ? Math.max(256, adaptivePolyphonyRef.current * 8) : adaptivePolyphonyRef.current;
+      if (groups.length >= polyLimit) break;
 
       let group = null;
       if (src === 'network' && instrumentRef.current) {
@@ -1065,27 +1069,23 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef) {
 
   const tasks = Array.from(pcmMap.values());
   const BATCH_SIZE = 8;
-  const scale = 1 / 32768;
 
   for (let i = 0; i < tasks.length; i++) {
     const entry = tasks[i];
     const pcmData = entry.pcmData;
     const length = pcmData.length;
 
-    // Int16 -> Float32 转换（新建 Float32Array，不修改原 pcmData）
-    const float32 = new Float32Array(length);
-    for (let j = 0; j < length; j++) {
-      float32[j] = pcmData[j] * scale;
-    }
+    // 直接传输 Int16Array 副本（2字节/样本），worklet 内部用预乘 _INV_32768 转换
+    // 相比 Float32Array（4字节/样本）节省 50% worklet 内存，且零额外 CPU 开销
+    const int16Copy = new Int16Array(pcmData);
 
-    // 通过 transferable 转移 float32.buffer 所有权到 worklet
-    // 转移后主线程的 float32 变量不再可用，但 pcmData (Int16Array) 不受影响
     workletNode.port.postMessage({
       type: 'load-sample',
       id: entry.id,
-      data: float32,
+      data: int16Copy,
       sampleRate: entry.sampleRate,
-    }, [float32.buffer]);
+      isInt16: true,
+    }, [int16Copy.buffer]);
 
     // 在所有共享此 pcmData 的 sampleObj 上记录 workletSampleId
     for (let k = 0; k < entry.sampleObjs.length; k++) {

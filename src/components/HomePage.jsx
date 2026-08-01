@@ -13,6 +13,7 @@ export default function HomePage({
 }) {
   const t = useTranslation(lang);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   
   return (
     <div style={{
@@ -28,6 +29,7 @@ export default function HomePage({
         onImportMidi={onImportMidi}
         onLoadProject={onImportProject}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenAbout={() => setAboutOpen(true)}
         lang={lang}
         theme={theme}
         onThemeChange={onThemeChange}
@@ -102,6 +104,57 @@ export default function HomePage({
           </div>
         )}
       </div>
+
+      {/* 关于对话框 */}
+      {aboutOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.7)' }} onClick={() => setAboutOpen(false)}>
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 16, padding: 0, maxWidth: 380, width: '90vw', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
+            {/* 头部：Logo + 标题 */}
+            <div style={{ textAlign: 'center', padding: '28px 24px 20px' }}>
+              <div style={{ display: 'inline-block', color: 'var(--text)', marginBottom: 8 }}>
+                <Icons.Logo size={48} />
+              </div>
+              <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 600, letterSpacing: 0.5 }}>Arvgrid</h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', margin: '4px 0 0' }}>
+                {lang === 'zh' ? '免费开源的 MIDI 编辑器' : 'Free & Open Source MIDI Editor'}
+              </p>
+            </div>
+            {/* 版本徽章 */}
+            <div style={{ textAlign: 'center', paddingBottom: 16 }}>
+              <span style={{ display: 'inline-block', color: 'var(--accent)', fontSize: '0.72rem', fontWeight: 600, padding: '3px 12px', borderRadius: 20, border: '1px solid var(--accent)' }}>
+                v260801
+              </span>
+              <span style={{ marginLeft: 8, fontSize: '0.68rem', color: 'var(--text-muted)' }}>MIT License</span>
+            </div>
+            {/* 链接列表 */}
+            <div style={{ borderTop: '1px solid var(--border)', padding: '14px 24px' }}>
+              <a href="https://github.com/qwq672/arvgrid" target="_blank" rel="noopener" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: 'var(--text)', textDecoration: 'none', fontSize: '0.78rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>GitHub</span>
+                <span style={{ color: 'var(--accent)' }}>qwq672/arvgrid</span>
+              </a>
+              <a href="https://awa.lat" target="_blank" rel="noopener" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: 'var(--text)', textDecoration: 'none', fontSize: '0.78rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>{lang === 'zh' ? '主页' : 'Homepage'}</span>
+                <span style={{ color: 'var(--accent)' }}>awa.lat</span>
+              </a>
+              <a href="mailto:b167963232@163.com" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: 'var(--text)', textDecoration: 'none', fontSize: '0.78rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Email</span>
+                <span style={{ color: 'var(--accent)' }}>b167963232@163.com</span>
+              </a>
+            </div>
+            {/* 技术栈 */}
+            <div style={{ borderTop: '1px solid var(--border)', padding: '14px 24px', textAlign: 'center' }}>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', lineHeight: 1.8 }}>
+                React + Vite + Web Audio API<br />
+                SF2 · AudioWorklet · MIDI
+              </div>
+            </div>
+            {/* 关闭按钮 */}
+            <div style={{ borderTop: '1px solid var(--border)', padding: '14px 24px', textAlign: 'center' }}>
+              <button onClick={() => setAboutOpen(false)} className="primary" style={{ minWidth: 120 }}>{lang === 'zh' ? '关闭' : 'Close'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <SettingsModal
         open={settingsOpen}

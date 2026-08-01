@@ -271,37 +271,50 @@ const Editor = memo(({
       {/* 关于对话框 */}
       {aboutOpen && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.7)' }} onClick={() => setAboutOpen(false)}>
-          <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, maxWidth: 400, width: '90vw', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'inline-block', color: 'var(--text)', marginBottom: 8 }}>
-              <Icons.Logo size={56} />
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 16, padding: 0, maxWidth: 380, width: '90vw', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
+            {/* 头部：Logo + 标题 */}
+            <div style={{ textAlign: 'center', padding: '28px 24px 20px' }}>
+              <div style={{ display: 'inline-block', color: 'var(--text)', marginBottom: 8 }}>
+                <Icons.Logo size={48} />
+              </div>
+              <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 600, letterSpacing: 0.5 }}>Arvgrid</h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', margin: '4px 0 0' }}>
+                {lang === 'zh' ? '免费开源的 MIDI 编辑器' : 'Free & Open Source MIDI Editor'}
+              </p>
             </div>
-            <h2 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 400 }}>Arvgrid</h2>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: '4px 0 12px' }}>
-              {lang === 'zh' ? '免费开源的 MIDI 编辑器' : 'Free & Open Source MIDI Editor'}
-            </p>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-              <div style={{ fontWeight: 600, color: 'var(--text)' }}>v260731</div>
-              <div style={{ marginTop: 8 }}>
-                {lang === 'zh'
-                  ? '基于 MIT 协议开源 · Web Audio API + React + Vite'
-                  : 'Open source under MIT License · Web Audio API + React + Vite'}
-              </div>
-              <div style={{ marginTop: 8, fontSize: '0.65rem' }}>
-                {lang === 'zh' ? '支持 MIDI 导入/导出，SF2 音色库，AudioWorklet 实时合成' : 'Supports MIDI import/export, SF2 soundfonts, AudioWorklet synthesis'}
-              </div>
-              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.7rem' }}>
-                <a href="https://github.com/qwq672/arvgrid" target="_blank" rel="noopener" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-                  {lang === 'zh' ? '仓库：github.com/qwq672/arvgrid' : 'Repo: github.com/qwq672/arvgrid'}
-                </a>
-                <a href="https://awa.lat" target="_blank" rel="noopener" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-                  {lang === 'zh' ? '作者主页：awa.lat' : 'Author: awa.lat'}
-                </a>
-                <a href="mailto:b167963232@163.com" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-                  b167963232@163.com
-                </a>
+            {/* 版本徽章 */}
+            <div style={{ textAlign: 'center', paddingBottom: 16 }}>
+              <span style={{ display: 'inline-block', color: 'var(--accent)', fontSize: '0.72rem', fontWeight: 600, padding: '3px 12px', borderRadius: 20, border: '1px solid var(--accent)' }}>
+                v260801
+              </span>
+              <span style={{ marginLeft: 8, fontSize: '0.68rem', color: 'var(--text-muted)' }}>MIT License</span>
+            </div>
+            {/* 链接列表 */}
+            <div style={{ borderTop: '1px solid var(--border)', padding: '14px 24px' }}>
+              <a href="https://github.com/qwq672/arvgrid" target="_blank" rel="noopener" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: 'var(--text)', textDecoration: 'none', fontSize: '0.78rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>GitHub</span>
+                <span style={{ color: 'var(--accent)' }}>qwq672/arvgrid</span>
+              </a>
+              <a href="https://awa.lat" target="_blank" rel="noopener" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: 'var(--text)', textDecoration: 'none', fontSize: '0.78rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>{lang === 'zh' ? '主页' : 'Homepage'}</span>
+                <span style={{ color: 'var(--accent)' }}>awa.lat</span>
+              </a>
+              <a href="mailto:b167963232@163.com" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: 'var(--text)', textDecoration: 'none', fontSize: '0.78rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Email</span>
+                <span style={{ color: 'var(--accent)' }}>b167963232@163.com</span>
+              </a>
+            </div>
+            {/* 技术栈 */}
+            <div style={{ borderTop: '1px solid var(--border)', padding: '14px 24px', textAlign: 'center' }}>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', lineHeight: 1.8 }}>
+                React + Vite + Web Audio API<br />
+                SF2 · AudioWorklet · MIDI
               </div>
             </div>
-            <button onClick={() => setAboutOpen(false)} className="primary" style={{ marginTop: 16 }}>{lang === 'zh' ? '关闭' : 'Close'}</button>
+            {/* 关闭按钮 */}
+            <div style={{ borderTop: '1px solid var(--border)', padding: '14px 24px', textAlign: 'center' }}>
+              <button onClick={() => setAboutOpen(false)} className="primary" style={{ minWidth: 120 }}>{lang === 'zh' ? '关闭' : 'Close'}</button>
+            </div>
           </div>
         </div>
       )}
