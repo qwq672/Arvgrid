@@ -11,22 +11,6 @@
 import type { ExportOptions, ExportProgress } from '../types/audio';
 import { getOscillatorPreset } from './oscillatorPresets';
 
-// 动态加载 lamejs MP3 编码器
-// lamejs npm 包的 src/js/index.js 使用 CommonJS require，Vite 的 CJS 转换
-// 会导致内部 MPEGMode 引用未定义。改用预打包的 lame.all.js（自包含，无 require）
-let _Mp3Encoder: any = null;
-const loadMp3Encoder = async () => {
-  if (_Mp3Encoder) return _Mp3Encoder;
-  // 以原始字符串导入，在沙箱中执行并提取 Mp3Encoder
-  const lameAllCode = (await import('lamejs/lame.all.js?raw')).default as string;
-  // lame.all.js 结构：function lamejs(){ ...定义... lamejs.Mp3Encoder=Mp3Encoder } lamejs();
-  const fn = new Function(`${lameAllCode}\nreturn lamejs;`);
-  const lamejsObj = fn();
-  _Mp3Encoder = lamejsObj.Mp3Encoder;
-  if (!_Mp3Encoder) throw new Error('Failed to load MP3 encoder');
-  return _Mp3Encoder;
-};
-
 /**
  * 根据 quality 选项解析导出参数
  * higher: 48kHz / 24bit(WAV) / 320kbps(MP3) — 更长渲染时间，更多细节
@@ -618,66 +602,80 @@ export function exportToWav(audioBuffer: AudioBuffer, bitDepth: number = 16): Bl
 
 /**
  * 导出为 MP3 格式
+ * 编码在 Web Worker 里跑，主线程不阻塞 UI
+ * 失败时直接抛错（让上层 UI 展示），不再 fallback 到主线程同步编码
+ * 因为同步编码会卡死 UI 几十秒，体验更差
  */
 export async function exportToMp3(
   audioBuffer: AudioBuffer,
   bitrate: number = 192,
   onProgress?: (progress: ExportProgress) => void
 ): Promise<Blob> {
-  const Mp3Encoder = await loadMp3Encoder();
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
-
-  const mp3encoder = new Mp3Encoder(numChannels, sampleRate, bitrate);
-  const mp3Data: Uint8Array[] = [];
-
   const left = audioBuffer.getChannelData(0);
   const right = numChannels > 1 ? audioBuffer.getChannelData(1) : left;
-
   const sampleBlockSize = 1152;
   const totalBlocks = Math.ceil(left.length / sampleBlockSize);
 
-  // 复用 Int16Array 缓冲区，避免每个块都分配新内存
-  const leftInt16 = new Int16Array(sampleBlockSize);
-  const rightInt16 = new Int16Array(sampleBlockSize);
-
-  let blockIndex = 0;
-  for (let i = 0; i < left.length; i += sampleBlockSize) {
-    const remaining = Math.min(sampleBlockSize, left.length - i);
-    // 就地转换 Float32 → Int16，避免 slice 和额外分配
-    for (let j = 0; j < remaining; j++) {
-      const l = left[i + j];
-      const r = right[i + j];
-      leftInt16[j] = l < 0 ? l * 0x8000 : l * 0x7FFF;
-      rightInt16[j] = r < 0 ? r * 0x8000 : r * 0x7FFF;
+  const mp3Buffer = await encodeMp3InWorker(left, right, sampleRate, numChannels, bitrate, totalBlocks, (current, total) => {
+    if (onProgress) {
+      onProgress({ current, total, stage: 'encoding' });
     }
-    // 如果最后一块不足 sampleBlockSize，用子数组传入
-    const lBuf = remaining < sampleBlockSize ? leftInt16.subarray(0, remaining) : leftInt16;
-    const rBuf = remaining < sampleBlockSize ? rightInt16.subarray(0, remaining) : rightInt16;
+  });
+  return new Blob([mp3Buffer], { type: 'audio/mp3' });
+}
 
-    const mp3buf = mp3encoder.encodeBuffer(lBuf, rBuf);
-    if (mp3buf.length > 0) {
-      mp3Data.push(new Uint8Array(mp3buf));
+/**
+ * 在 Web Worker 里编码 MP3
+ */
+async function encodeMp3InWorker(
+  left: Float32Array,
+  right: Float32Array,
+  sampleRate: number,
+  numChannels: number,
+  bitrate: number,
+  totalBlocks: number,
+  onProgress?: (current: number, total: number) => void
+): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL('../workers/mp3-encoder.worker.js', import.meta.url), { type: 'module' });
+    } catch (err) {
+      reject(err);
+      return;
     }
+    // 复制 Float32Array 副本传输（原 audioBuffer 还要保留供后续可能使用）
+    const leftCopy = new Float32Array(left);
+    const rightCopy = new Float32Array(right);
 
-    blockIndex++;
-    // 每 100 块更新一次进度并让出主线程，避免 UI 冻结
-    if (onProgress && blockIndex % 100 === 0) {
-      onProgress({ current: blockIndex, total: totalBlocks, stage: 'encoding' });
-      await new Promise(r => setTimeout(r, 0));
-    }
-  }
-
-  const end = mp3encoder.flush();
-  if (end.length > 0) {
-    mp3Data.push(new Uint8Array(end));
-  }
-
-  if (onProgress) {
-    onProgress({ current: totalBlocks, total: totalBlocks, stage: 'encoding' });
-  }
-
-  return new Blob(mp3Data as BlobPart[], { type: 'audio/mp3' });
+    worker.onmessage = (e: MessageEvent) => {
+      const msg = e.data;
+      if (msg.type === 'progress') {
+        if (onProgress) onProgress(msg.current, msg.total);
+      } else if (msg.type === 'encode-success') {
+        worker.terminate();
+        resolve(msg.mp3Data);
+      } else if (msg.type === 'encode-error') {
+        worker.terminate();
+        reject(new Error(msg.message));
+      }
+    };
+    worker.onerror = (err: ErrorEvent) => {
+      worker.terminate();
+      reject(new Error(err.message || 'Worker error'));
+    };
+    worker.postMessage({
+      type: 'encode-mp3',
+      left: leftCopy,
+      right: rightCopy,
+      sampleRate,
+      numChannels,
+      bitrate,
+      totalBlocks,
+    }, [leftCopy.buffer, rightCopy.buffer]);
+  });
 }
 
 /**
