@@ -279,6 +279,25 @@ export default function App() {
     return result.success;
   };
 
+  // UI 缩放：移动设备禁用 zoom（mobile Edge 上会导致布局异常）
+  // 改用 font-size 缩放，对布局影响最小
+  const applyUiScale = useCallback((val) => {
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent || '');
+    if (isMobile) {
+      // 移动设备：清除 zoom，不应用缩放（避免 mobile Edge 布局 bug）
+      document.body.style.zoom = '';
+      document.documentElement.style.fontSize = ''; // 不改 font-size，保持原生
+    } else {
+      // 桌面：zoom 工作正常
+      document.body.style.zoom = val / 100;
+    }
+  }, []);
+
+  // 初始化时应用一次 uiScale
+  useEffect(() => {
+    applyUiScale(uiScale);
+  }, [uiScale, applyUiScale]);
+
   if (showHome) {
     return (
       <>
@@ -305,7 +324,7 @@ export default function App() {
           onUiScaleChange={(val) => {
             setUiScale(val);
             localStorage.setItem('arvgrid_ui_scale', val);
-            document.body.style.zoom = val / 100;
+            applyUiScale(val);
           }}
           onClearCache={handleClearCache}
           onResetSettings={handleResetSettings}
@@ -356,7 +375,7 @@ export default function App() {
         onUiScaleChange={(val) => {
           setUiScale(val);
           localStorage.setItem('arvgrid_ui_scale', val);
-          document.body.style.zoom = val / 100;
+          applyUiScale(val);
         }}
         onClearCache={handleClearCache}
         onResetSettings={handleResetSettings}

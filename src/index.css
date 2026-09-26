@@ -282,10 +282,11 @@ input[type="radio"] { accent-color: var(--text-muted); }
 
 /* 响应式：小屏幕适配 */
 @media (max-width: 768px) {
-  .menu-bar { flex-wrap: wrap; height: auto; padding: 4px; }
-  .menu-item { padding: 4px 8px; font-size: 0.7rem; }
-  button { padding: 3px 7px; font-size: 0.7rem; }
-  .edit-toolbar { margin-left: 4px; }
+  /* menu-bar 不 wrap，改横向滚动，避免换行撑高挤压编辑区 */
+  .menu-bar { flex-wrap: nowrap; height: 36px; overflow-x: auto; overflow-y: hidden; padding: 0 4px; }
+  .menu-item { padding: 4px 8px; font-size: 0.7rem; flex-shrink: 0; }
+  button { padding: 3px 7px; font-size: 0.7rem; flex-shrink: 0; }
+  .edit-toolbar { margin-left: 4px; flex-shrink: 0; }
   input, select { font-size: 0.7rem; padding: 3px 6px; }
   /* Transport 控制条换行优化 */
   .controls-bar { gap: 6px !important; padding: 4px 6px !important; }
@@ -293,12 +294,12 @@ input[type="radio"] { accent-color: var(--text-muted); }
   .modal-content { max-width: 95vw; max-height: 90vh; padding: 14px; }
 }
 
-/* 极小屏幕（手机竖屏）桌面模式也允许菜单换行 */
+/* 极小屏幕（手机竖屏）— menu-bar 仍保持横向滚动，不换行 */
 @media (max-width: 600px) {
-  .menu-bar { flex-wrap: wrap; height: auto; max-height: 96px; overflow-x: auto; overflow-y: hidden; padding: 2px 4px; gap: 2px; }
-  .menu-item { padding: 4px 6px; min-height: 32px; font-size: 0.65rem; white-space: nowrap; }
-  button { min-height: 32px; min-width: 32px; padding: 3px 6px; }
-  .edit-toolbar button { padding: 3px 6px; min-height: 32px; }
+  .menu-bar { flex-wrap: nowrap; height: 36px; overflow-x: auto; overflow-y: hidden; padding: 0 4px; gap: 2px; }
+  .menu-item { padding: 4px 6px; min-height: 28px; font-size: 0.65rem; white-space: nowrap; flex-shrink: 0; }
+  button { min-height: 28px; min-width: 28px; padding: 3px 6px; flex-shrink: 0; }
+  .edit-toolbar button { padding: 3px 6px; min-height: 28px; }
   /* 隐藏次要装饰文字（"BPM"/"R"等）以节省空间 */
   .controls-bar label { font-size: 0.65rem; }
   /* Modal 占满 */
@@ -315,8 +316,11 @@ body.touch-mode button,
 .touch-mode button { min-height: 44px; min-width: 44px; }
 body.touch-mode input[type="range"],
 .touch-mode input[type="range"] { min-height: 24px; }
+/* menu-bar 内的元素不受 44px 触摸尺寸影响，保持紧凑 */
+body.touch-mode .menu-bar button,
+.touch-mode .menu-bar button { min-height: auto; min-width: auto; }
 body.touch-mode .menu-item,
-.touch-mode .menu-item { padding: 8px 12px; min-height: 40px; }
+.touch-mode .menu-item { padding: 4px 8px; min-height: auto; }
 body.touch-mode select,
 .touch-mode select { min-height: 36px; }
 
@@ -331,7 +335,7 @@ body.touch-mode .piano-roll-scroll,
 
 /* 触摸模式交互元素间距 */
 body.touch-mode .menu-bar,
-.touch-mode .menu-bar { gap: 4px; padding: 0 8px; }
+.touch-mode .menu-bar { gap: 2px; padding: 0 4px; height: 36px; overflow-x: auto; overflow-y: hidden; }
 body.touch-mode .edit-toolbar button,
 .touch-mode .edit-toolbar button { padding: 4px 10px; min-height: 40px; }
 
@@ -357,26 +361,28 @@ body.touch-mode .transport button,
 @media (max-width: 600px) {
   body.touch-mode .menu-bar,
   .touch-mode .menu-bar {
-    flex-wrap: wrap;
-    height: auto;
-    max-height: 96px;
+    /* 仍保持 nowrap，避免换行撑高 */
+    flex-wrap: nowrap;
+    height: 36px;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 2px 4px;
+    padding: 0 4px;
     gap: 2px;
   }
   body.touch-mode .menu-item,
   .touch-mode .menu-item {
     padding: 4px 6px;
-    min-height: 32px;
+    min-height: 28px;
     font-size: 0.65rem;
     white-space: nowrap;
+    flex-shrink: 0;
   }
-  body.touch-mode button,
-  .touch-mode button {
-    min-height: 36px;
-    min-width: 36px;
+  body.touch-mode .menu-bar button,
+  .touch-mode .menu-bar button {
+    min-height: 28px;
+    min-width: 28px;
     padding: 3px 6px;
+    flex-shrink: 0;
   }
   body.touch-mode .edit-toolbar button,
   .touch-mode .edit-toolbar button {
