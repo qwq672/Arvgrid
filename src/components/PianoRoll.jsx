@@ -401,7 +401,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     if (!isPlaying) { if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } drawPlayhead(0); return; }
     let lastTime = 0;
     const animate = (ts) => {
-      if (ts - lastTime < 33) { rafRef.current = requestAnimationFrame(animate); return; } // ~30fps
+      // v6: 节流到 ~20fps（50ms），减少移动设备 canvas 重绘开销
+      if (ts - lastTime < 50) { rafRef.current = requestAnimationFrame(animate); return; }
       lastTime = ts;
       if (getPlaybackTime) drawPlayhead(getPlaybackTime());
       rafRef.current = requestAnimationFrame(animate);

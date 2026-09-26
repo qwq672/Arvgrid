@@ -54,9 +54,9 @@ export default function Transport({
 
     let lastUpdate = 0;
     const updateDisplay = (ts) => {
-      // 节流到 ~30fps：每 33ms 更新一次 DOM
-      // 60fps 更新进度条 transform 和 textContent 在低端设备竖屏模式会卡
-      if (ts - lastUpdate < 33) {
+      // v6: 节流到 ~20fps（50ms），减少移动设备 DOM 更新开销
+      // 30fps 在移动设备仍偏密集，20fps 进度条更新依然流畅
+      if (ts - lastUpdate < 50) {
         rafRef.current = requestAnimationFrame(updateDisplay);
         return;
       }
