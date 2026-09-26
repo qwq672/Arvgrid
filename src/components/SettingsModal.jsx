@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
+import { isWasmSupported } from '../lib/wasmBackend';
 
 export default function SettingsPanel({
   open, onClose,
@@ -20,9 +21,25 @@ export default function SettingsPanel({
   const [exportBitDepth, setExportBitDepth] = useState(() => {
     return parseInt(localStorage.getItem('arvgrid_export_bit_depth')) || 16;
   });
+  // 实验性 WASM 后端开关
+  const [wasmEnabled, setWasmEnabled] = useState(() => {
+    return localStorage.getItem('arvgrid_wasm_backend') === '1';
+  });
+  const wasmSupported = isWasmSupported();
   const t = useTranslation(lang);
 
   if (!open) return null;
+
+  const handleWasmToggle = (enabled) => {
+    setWasmEnabled(enabled);
+    localStorage.setItem('arvgrid_wasm_backend', enabled ? '1' : '0');
+    if (enabled) {
+      // 提示用户需要重新加载 SF2 才能生效
+      alert(lang === 'zh'
+        ? '已启用实验性 WASM 后端。下次加载 SF2 时将尝试使用 WASM 解析（如果 WASM 文件已部署）。加载失败会自动回退到 JS。'
+        : 'Experimental WASM backend enabled. Next SF2 load will try WASM parsing (if WASM file is deployed). Falls back to JS on failure.');
+    }
+  };
 
   const handleSF2Select = async (e) => {
     const file = e.target.files[0];
@@ -111,6 +128,38 @@ export default function SettingsPanel({
               </label>
               <button onClick={() => fileInputRef.current?.click()} style={{ marginTop: 6, width: '100%', fontSize: '0.75rem' }}>{t.loadSF2}</button>
               <input ref={fileInputRef} type="file" accept=".sf2,.sf3" onChange={handleSF2Select} style={{ display: 'none' }} />
+            </div>
+          )}
+
+          {/* 实验性：WASM 后端 */}
+          {matchSearch(lang === 'zh' ? '实验性' : 'Experimental') && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                {lang === 'zh' ? '实验性功能' : 'Experimental'} <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>(Beta)</span>
+              </label>
+              <label style={{
+                display: 'flex', alignItems: 'flex-start', gap: 8, cursor: wasmSupported ? 'pointer' : 'not-allowed',
+                padding: '8px 10px', fontSize: '0.72rem', borderRadius: 6,
+                border: wasmEnabled ? '1px solid var(--accent)' : '1px solid var(--border)',
+                background: wasmEnabled ? 'var(--track-hover)' : 'var(--track-bg)',
+                opacity: wasmSupported ? 1 : 0.5,
+              }}>
+                <input type="checkbox" checked={wasmEnabled} disabled={!wasmSupported}
+                  onChange={e => handleWasmToggle(e.target.checked)}
+                  style={{ marginTop: 2 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600 }}>
+                    {lang === 'zh' ? 'WASM SF2 解析器' : 'WASM SF2 Parser'}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                    {wasmSupported
+                      ? (lang === 'zh'
+                        ? '使用 WebAssembly 加速 SF2 文件解析（实验性，WASM 文件未部署时会自动回退到 JS）'
+                        : 'Use WebAssembly to accelerate SF2 parsing (experimental, falls back to JS if WASM file not deployed)')
+                      : (lang === 'zh' ? '当前浏览器不支持 WebAssembly' : 'WebAssembly not supported in this browser')}
+                  </div>
+                </div>
+              </label>
             </div>
           )}
 

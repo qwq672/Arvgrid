@@ -17,12 +17,23 @@ export default function Sf2LoadingDialog({ progress, lang = 'zh' }) {
   if (!progress) return null;
   const isError = progress.stage === 'error';
   const isDone = progress.stage === 'done';
+  const isWarning = progress.stage === 'wasm-fallback';
 
   const stageText = (() => {
     if (isError) return t.sf2LoadingFailed;
-    if (isDone) return t.sf2LoadingDone;
+    if (isDone) {
+      const backendLabel = progress.backend === 'wasm'
+        ? (lang === 'zh' ? 'WASM' : 'WASM')
+        : (lang === 'zh' ? 'JS' : 'JS');
+      return `${t.sf2LoadingDone} (${backendLabel})`;
+    }
     if (progress.stage === 'parsing') return t.sf2LoadingParsing;
     if (progress.stage === 'transferring') return t.sf2LoadingTransferring;
+    if (progress.stage === 'wasm-loading') return t.wasmLoading;
+    if (progress.stage === 'wasm-fetching') return lang === 'zh' ? '正在下载 WASM 模块…' : 'Downloading WASM module...';
+    if (progress.stage === 'wasm-compiling') return t.wasmCompiling;
+    if (progress.stage === 'wasm-ready') return t.wasmReady;
+    if (progress.stage === 'wasm-fallback') return t.wasmFallback;
     return t.exportProcessing;
   })();
 
