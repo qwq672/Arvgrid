@@ -997,33 +997,54 @@ export function useAudioEngine() {
     audioCtxRef,
     soundSource,
     setSoundSource,
-    loadSF2: async (arrayBuffer) => {
+    loadSF2: async (arrayBuffer, onProgress) => {
       await initAudio();
       try {
-        const sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
+        // 阶段 1：在 Web Worker 里解析 SF2（不卡主线程）
+        // 之前 parseSF2 同步跑在主线程，10MB SF2 卡 2-3 秒
+        if (onProgress) onProgress({ stage: 'parsing', percent: 0 });
+        let sf2Data;
+        let parseMs = 0;
+        try {
+          const result = await parseSF2InWorker(arrayBuffer, (p) => {
+            if (onProgress) onProgress({ stage: 'parsing', percent: p });
+          });
+          sf2Data = result.sf2Data;
+          parseMs = result.parseMs;
+        } catch (err) {
+          // Worker 加载失败（极旧浏览器）回退到主线程解析
+          console.warn('[arvgrid] SF2 worker failed, fallback to main thread:', err);
+          sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
+        }
+        if (onProgress) onProgress({ stage: 'parsing', percent: 100, parseMs });
+
         sf2DataRef.current = sf2Data;
         sf2BuffersRef.current = {};
         sf2PresetMapRef.current.clear();
         adaptivePolyphonyRef.current = MAX_POLYPHONY;
         setSoundSource('sf2');
 
-        // 将所有样本数据传输到 worklet（分批进行，不阻塞 UI）
+        // 阶段 2：将样本数据传输到 worklet（分批进行，不阻塞 UI）
         // worklet 在音频线程内完成样本读取、变调、包络，无需创建 AudioBuffer
         if (workletReadyRef.current && workletNodeRef.current) {
           // 先清除 worklet 中旧的样本库（加载新 SF2 时）
           workletNodeRef.current.port.postMessage({ type: 'clear-samples' });
-          await sendSamplesToWorklet(sf2Data, workletNodeRef.current, workletSampleIdCounterRef);
+          await sendSamplesToWorklet(sf2Data, workletNodeRef.current, workletSampleIdCounterRef, (p) => {
+            if (onProgress) onProgress({ stage: 'transferring', percent: p });
+          });
           // 同步当前复音数到 worklet
           workletNodeRef.current.port.postMessage({
             type: 'set-polyphony',
             value: adaptivePolyphonyRef.current,
           });
         }
+        if (onProgress) onProgress({ stage: 'done', percent: 100 });
 
         return { success: true, name: sf2Data.name || 'SF2' };
       } catch (err) {
         console.error('SF2 load failed:', err);
-        return { success: false, name: '' };
+        if (onProgress) onProgress({ stage: 'error', message: err?.message || String(err) });
+        return { success: false, name: '', error: err?.message || String(err) };
       }
     },
     sf2Loaded: !!sf2DataRef.current,
@@ -1059,10 +1080,49 @@ function noteToMidi(pitch) {
   return (parseInt(m[2])+1)*12 + map[m[1]];
 }
 
+// 在 Web Worker 里解析 SF2，避免阻塞主线程
+// Worker 通过 Vite 自动 chunk 化，运行时是纯本地后台线程
+// Worker 加载失败（极旧浏览器）会抛出异常，调用方应回退到主线程 parseSF2
+async function parseSF2InWorker(arrayBuffer, onProgress) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = new Worker(new URL('../workers/sf2-parser.worker.js', import.meta.url), { type: 'module' });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const cleanup = () => {
+      worker.terminate();
+    };
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'parse-success') {
+        cleanup();
+        // sf2Data 里的 sampleObj.pcmData 已经被 transfer，原主线程副本不可用
+        // 但 worker 返回的 sf2Data 是结构化克隆 + transferable 后的新引用，主线程可直接用
+        resolve({ sf2Data: msg.sf2Data, parseMs: msg.parseMs });
+      } else if (msg.type === 'parse-error') {
+        cleanup();
+        reject(new Error(msg.message));
+      }
+    };
+    worker.onerror = (err) => {
+      cleanup();
+      reject(new Error(err.message || 'Worker error'));
+    };
+    // 解析是大块同步任务，worker 内部无法实时报进度
+    // 但因为不在主线程，UI 不会冻结
+    worker.postMessage({ type: 'parse-sf2', arrayBuffer }, [arrayBuffer]);
+  });
+}
+
 // 将 SF2 样本数据传输到 AudioWorklet
-// 分批进行以避免阻塞主线程；通过 transferable 转移 Float32Array 所有权到 worklet
+// 分批进行以避免阻塞主线程；通过 transferable 转移 Int16Array 所有权到 worklet
 // 保留主线程的 pcmData (Int16Array) 供 audioExport.ts 离线渲染使用
-async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef) {
+// 注意：从 worker 返回的 pcmData 是 transferable 后的新引用，这里传输时会再次 transfer，
+//      所以 audioExport.ts 读到的 pcmData 会变 null，但 audioExport 已做兜底（重新解析或回退合成器）
+async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgress) {
   if (!sf2Data || !sf2Data.presets || !workletNode) return;
 
   // 按 pcmData 引用去重：同一 pcmData 可能被多个 sampleObj 共享（不同 zone 有不同音高参数）
@@ -1093,6 +1153,7 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef) {
   if (pcmMap.size === 0) return;
 
   const tasks = Array.from(pcmMap.values());
+  const total = tasks.length;
   const BATCH_SIZE = 8;
 
   for (let i = 0; i < tasks.length; i++) {
@@ -1102,6 +1163,8 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef) {
 
     // 直接传输 Int16Array 副本（2字节/样本），worklet 内部用预乘 _INV_32768 转换
     // 相比 Float32Array（4字节/样本）节省 50% worklet 内存，且零额外 CPU 开销
+    // 注意：从 worker 返回的 pcmData 已经是 transferable 后的新实例，这里 copy 一份再 transfer
+    // 保留原 pcmData 供 audioExport.ts 离线渲染使用
     const int16Copy = new Int16Array(pcmData);
 
     workletNode.port.postMessage({
@@ -1115,6 +1178,11 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef) {
     // 在所有共享此 pcmData 的 sampleObj 上记录 workletSampleId
     for (let k = 0; k < entry.sampleObjs.length; k++) {
       entry.sampleObjs[k].workletSampleId = entry.id;
+    }
+
+    // 进度回调
+    if (onProgress && ((i + 1) % BATCH_SIZE === 0 || i === total - 1)) {
+      onProgress(Math.round(((i + 1) / total) * 100));
     }
 
     // 每 BATCH_SIZE 个样本让出主线程一次，避免长时间阻塞 UI

@@ -4,6 +4,7 @@ import { useAudioEngine } from './hooks/useAudioEngine';
 import { useAutoSave } from './hooks/useAutoSave';
 import HomePage from './components/HomePage';
 import Editor from './components/Editor';
+import Sf2LoadingDialog from './components/Sf2LoadingDialog';
 import { parseMidiFile, generateMidiFile } from './lib/midi';
 import { exportAudio } from './lib/audioExport';
 import { useTranslation } from './lib/i18n';
@@ -38,6 +39,7 @@ export default function App() {
   });
   const [sf2Loaded, setSf2Loaded] = useState(false);
   const [sf2Name, setSf2Name] = useState('');
+  const [sf2LoadingProgress, setSf2LoadingProgress] = useState(null); // { stage, percent, message }
 
   const project = useProject();
   const audioEngine = useAudioEngine();
@@ -262,52 +264,63 @@ export default function App() {
   };
 
   const handleLoadSF2 = async (arrayBuffer) => {
-    const result = await audioEngine.loadSF2(arrayBuffer);
+    setSf2LoadingProgress({ stage: 'parsing', percent: 0 });
+    const result = await audioEngine.loadSF2(arrayBuffer, (p) => {
+      setSf2LoadingProgress(p);
+    });
     if (result.success) {
       setSf2Loaded(true);
       setSf2Name(result.name);
+    } else {
+      // 加载失败：保留 progress 让用户看到错误
+      setSf2LoadingProgress({ stage: 'error', message: result.error || 'Unknown error' });
     }
+    setTimeout(() => setSf2LoadingProgress(null), result.success ? 1500 : 6000);
     return result.success;
   };
 
   if (showHome) {
     return (
-      <HomePage
-        onNewProject={handleNewProject}
-        onImportMidi={() => {
-          const input = document.createElement('input');
-          input.type = 'file';
-          input.accept = '.mid,.midi';
-          input.onchange = (e) => e.target.files[0] && handleImportMidi(e.target.files[0]);
-          input.click();
-        }}
-        onImportProject={handleLoadProjectFile}
-        recentProjects={recentProjects}
-        onLoadRecent={handleLoadRecent}
-        lang={lang}
-        onLangChange={handleLangChange}
-        theme={theme}
-        onThemeChange={setTheme}
-        onLoadSF2={handleLoadSF2}
-        sf2Loaded={sf2Loaded}
-        sf2Name={sf2Name}
-        uiScale={uiScale}
-        onUiScaleChange={(val) => {
-          setUiScale(val);
-          localStorage.setItem('arvgrid_ui_scale', val);
-          document.body.style.zoom = val / 100;
-        }}
-        onClearCache={handleClearCache}
-        onResetSettings={handleResetSettings}
-        pendingAutosave={pendingAutosave}
-        onRecoverAutosave={handleRecoverAutosave}
-        onDiscardAutosave={handleDiscardAutosave}
-      />
+      <>
+        <HomePage
+          onNewProject={handleNewProject}
+          onImportMidi={() => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.mid,.midi';
+            input.onchange = (e) => e.target.files[0] && handleImportMidi(e.target.files[0]);
+            input.click();
+          }}
+          onImportProject={handleLoadProjectFile}
+          recentProjects={recentProjects}
+          onLoadRecent={handleLoadRecent}
+          lang={lang}
+          onLangChange={handleLangChange}
+          theme={theme}
+          onThemeChange={setTheme}
+          onLoadSF2={handleLoadSF2}
+          sf2Loaded={sf2Loaded}
+          sf2Name={sf2Name}
+          uiScale={uiScale}
+          onUiScaleChange={(val) => {
+            setUiScale(val);
+            localStorage.setItem('arvgrid_ui_scale', val);
+            document.body.style.zoom = val / 100;
+          }}
+          onClearCache={handleClearCache}
+          onResetSettings={handleResetSettings}
+          pendingAutosave={pendingAutosave}
+          onRecoverAutosave={handleRecoverAutosave}
+          onDiscardAutosave={handleDiscardAutosave}
+        />
+        <Sf2LoadingDialog progress={sf2LoadingProgress} lang={lang} />
+      </>
     );
   }
 
   return (
-    <Editor
+    <>
+      <Editor
         project={project}
         audioEngine={audioEngine}
         autoSaveMode={autoSaveMode}
@@ -355,5 +368,7 @@ export default function App() {
         sf2Loaded={sf2Loaded}
         sf2Name={sf2Name}
       />
+      <Sf2LoadingDialog progress={sf2LoadingProgress} lang={lang} />
+    </>
   );
 }
