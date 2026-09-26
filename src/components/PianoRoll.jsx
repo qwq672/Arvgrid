@@ -1005,8 +1005,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
 
   return (
     <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--bg)', borderRadius: 6, overflow: 'hidden', minHeight: 0 }}>
-      {/* 工具栏 */}
-      <div style={{ padding: '3px 6px', display: 'flex', gap: 4, flexShrink: 0, flexWrap: 'wrap', background: 'var(--panel)', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
+      {/* 工具栏：窄屏不 wrap（避免撑高挤压钢琴卷帘），改用横向滚动 */}
+      <div style={{ padding: '3px 6px', display: 'flex', gap: 4, flexShrink: 0, flexWrap: 'nowrap', overflowX: 'auto', background: 'var(--panel)', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
         <button onClick={() => setZoomX(z => Math.min(300, z * 1.2))} title={t.zoomIn} style={{ padding: '2px 6px' }}><Icons.ZoomIn /></button>
         <button onClick={() => setZoomX(z => Math.max(20, z * 0.8))} title={t.zoomOut} style={{ padding: '2px 6px' }}><Icons.ZoomOut /></button>
         <button onClick={() => { offsetXRef.current = 0; offsetYRef.current = 0; setZoomX(isNarrow ? 60 : 80); setZoomY(isNarrow ? 16 : 20); }} title={t.resetView} style={{ padding: '2px 6px' }}><Icons.Reset /></button>

@@ -37,7 +37,7 @@ export default function Transport({
   const rafRef = useRef(null);
   const t = useTranslation(lang);
 
-  // 使用 requestAnimationFrame 更新显示时间
+  // 使用 requestAnimationFrame 更新显示时间（节流到 ~30fps 减少低端设备竖屏卡顿）
   useEffect(() => {
     if (!isPlaying || isPaused) {
       displayTimeRef.current = currentTime || 0;
@@ -52,7 +52,15 @@ export default function Transport({
       return;
     }
 
-    const updateDisplay = () => {
+    let lastUpdate = 0;
+    const updateDisplay = (ts) => {
+      // 节流到 ~30fps：每 33ms 更新一次 DOM
+      // 60fps 更新进度条 transform 和 textContent 在低端设备竖屏模式会卡
+      if (ts - lastUpdate < 33) {
+        rafRef.current = requestAnimationFrame(updateDisplay);
+        return;
+      }
+      lastUpdate = ts;
       if (getPlaybackTime) {
         displayTimeRef.current = getPlaybackTime();
       }
@@ -119,7 +127,7 @@ export default function Transport({
   }, [isDragging, totalDuration, onSeek]);
 
   return (
-    <div className="controls-bar" style={{ padding: '6px 10px', display: 'flex', gap: 8, alignItems: 'center', borderTop: '1px solid var(--border)', flexShrink: 0, background: 'var(--panel)', flexWrap: 'wrap', overflow: 'hidden', minHeight: 48 }}>
+    <div className="controls-bar" style={{ padding: '6px 10px', display: 'flex', gap: 8, alignItems: 'center', borderTop: '1px solid var(--border)', flexShrink: 0, background: 'var(--panel)', flexWrap: 'wrap', overflow: 'hidden', minHeight: 48, maxHeight: 120 }}>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
         {!isPlaying ? (
           <button onClick={onPlay} className="transport-play"><Icons.Play /></button>
@@ -162,7 +170,8 @@ export default function Transport({
         </div>
         <span ref={timeDisplayRef} style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{formatTime(currentTime)} / {formatTime(totalDuration)}</span>
       </div>
-      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexShrink: 0, flexWrap: 'wrap' }}>
+      {/* 效果器组：窄屏时单独成行，避免无限 wrap 撑高 Transport */}
+      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexShrink: 0, flexWrap: 'wrap', maxHeight: 36, overflow: 'hidden' }}>
         <span style={{ fontSize: '0.7rem' }}>{t.reverb}</span>
         <input type="range" min="0" max="1" step="0.01" value={reverbSend} onChange={(e) => onReverbSendChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
         <span style={{ fontSize: '0.7rem' }}>{t.delay}</span>
