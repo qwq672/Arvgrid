@@ -14,10 +14,19 @@ const CPU_CORES = (typeof navigator !== 'undefined' && navigator.hardwareConcurr
 const INITIAL_POLYPHONY = CPU_CORES <= 2 ? 16 : CPU_CORES <= 4 ? 24 : MAX_POLYPHONY;
 const LOW_END_MIN_POLYPHONY = CPU_CORES <= 2 ? 8 : MIN_POLYPHONY;
 
+// 移动设备检测：不能只靠 hardwareConcurrency（big.LITTLE 架构会报告 8 核）
+// 需要综合判断：触屏 + 小屏 + UA
+const IS_MOBILE = (typeof navigator !== 'undefined' && typeof window !== 'undefined') && (
+  // UA 检测
+  /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent || '') ||
+  // 触屏 + 小屏
+  (navigator.maxTouchPoints > 1 && window.innerWidth < 1024)
+);
+
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
 // 更大的 lookahead 和更短的 interval 可以减少卡顿
 const BUFFER_PRESETS = {
-  short: [0.10, 15],   // 低延迟模式（默认）：lookahead 100ms，scheduler 15ms
+  short: [0.10, 15],   // 低延迟模式：lookahead 100ms，scheduler 15ms
   medium: [0.25, 25],  // 平衡模式
   long: [0.5, 40],     // 高稳定性模式
   ultra: [1.0, 50],    // 极致稳定模式（高内存占用）
@@ -62,8 +71,10 @@ export function useAudioEngine() {
   const [metronomeOn, setMetronomeOn] = useState(false);
   const metronomeOnRef = useRef(false);
   const bpmRef = useRef(120);
-  // 低配设备（2核）自动使用更大的缓冲区以减少卡顿，其他设备默认 short 模式以获得更低延迟
-  const initialBufferPreset = CPU_CORES <= 2 ? 'long' : 'short';
+  // 低配设备（2核）或移动设备用更大的缓冲区以减少卡顿
+  // 移动设备即使 hardwareConcurrency 报告 8 核（big.LITTLE），实际单核性能远低于桌面
+  // 15ms scheduler 在移动设备主线程太密集，会导致 PianoRoll 重绘卡顿
+  const initialBufferPreset = (CPU_CORES <= 2 || IS_MOBILE) ? 'medium' : 'short';
   const initialBufferValues = BUFFER_PRESETS[initialBufferPreset];
   const [bufferSize, setBufferSizeState] = useState(initialBufferPreset);
   const bufferSizeRef = useRef(initialBufferPreset);
