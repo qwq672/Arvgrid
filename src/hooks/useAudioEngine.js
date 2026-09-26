@@ -184,7 +184,8 @@ export function useAudioEngine() {
       // 加版本号查询串强制浏览器加载最新 worklet 代码（worklet 模块会被强缓存，
       // 旧版 harsh soft-clip 代码不更新会导致"音量调到1%仍爆音"问题）
       // v4: 三次插值 + SF2 循环点 + 真实 ADSR
-      const workletUrl = new URL('worklets/sf2-processor.js?v=4', location.href).href;
+      // v5: 循环回卷用 modulo 防止高音跳跃、软限幅阈值 0.9→0.95
+      const workletUrl = new URL('worklets/sf2-processor.js?v=5', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,

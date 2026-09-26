@@ -103,9 +103,10 @@ class SF2Processor extends AudioWorkletProcessor {
     const ctxRate = sampleRate;
 
     // peakGain：Int16 样本需预乘 _INV_32768 转为 Float 范围
-    // 0.05 per voice，配合透明软限幅和压缩器防止多音叠加爆音
+    // 0.08 per voice（从 0.05 提升，让单音音量更接近真实 SF2 播放器），
+    // 配合透明软限幅和压缩器防止多音叠加爆音
     // gainScale: 通道音量（P2），0-1 缩放每轨增益防止多轨叠加爆音
-    let peakGain = (msg.velocity / 127) * 0.05 * (msg.gainScale ?? 1);
+    let peakGain = (msg.velocity / 127) * 0.08 * (msg.gainScale ?? 1);
     if (sample.isInt16) peakGain *= _INV_32768;
 
     const isDrum = !!msg.isDrum;
@@ -283,9 +284,10 @@ class SF2Processor extends AudioWorkletProcessor {
         if (state === 'done') break;
 
         // 循环点处理：当音符持续时间未结束且 position 越过 loopEnd 时，回卷到 loopStart
-        // 这样持续音符（弦乐/铜管）不会过早结束
+        // 用 while 防止高音（rateRatio 大）一次跳跃超过整个 loop length
         if (!inRelease && hasLoop && position >= loopEnd && loopEnd > loopStart) {
-          position = loopStart + (position - loopEnd);
+          const loopLen = loopEnd - loopStart;
+          position = loopStart + ((position - loopStart) % loopLen);
         }
         // 非循环样本走到末尾即结束
         if (position >= srcLen) { state = 'done'; break; }
@@ -392,26 +394,29 @@ class SF2Processor extends AudioWorkletProcessor {
 
     this.voices = remaining;
 
-    // 透明软限幅：|s|<0.9 时完全线性无失真，>0.9 平滑趋近 ±0.98（永不硬削波）
-    // 主线程压缩器（limitter）负责主要动态控制；此处仅作防爆音安全网，
-    // 且曲线平滑不产生刺耳谐波——修复"音量调到1%仍爆音"问题（旧版 harsh soft-clip 在主音量前已 baking 失真）
+    // 透明软限幅：|s|<0.95 时完全线性无失真，>0.95 平滑趋近 ±1.0（永不硬削波）
+    // 阈值从 0.9 提到 0.95，让大部分输出完全线性，避免在正常音量下产生压缩感
+    // 主线程压缩器负责主要动态控制；此处仅作防爆音安全网
+    // 曲线：s > 0.95 时趋近 0.95 + 0.05 = 1.0
+    const CLIP_THRESH = 0.95;
+    const CLIP_RANGE = 0.05;
     for (let i = 0; i < blockSize; i++) {
       let s0 = out0[i];
-      if (s0 > 0.9) {
-        const e = s0 - 0.9;
-        out0[i] = 0.9 + 0.08 * e / (0.08 + e);  // 趋近 0.98
-      } else if (s0 < -0.9) {
-        const e = -s0 - 0.9;
-        out0[i] = -(0.9 + 0.08 * e / (0.08 + e));
+      if (s0 > CLIP_THRESH) {
+        const e = s0 - CLIP_THRESH;
+        out0[i] = CLIP_THRESH + CLIP_RANGE * e / (CLIP_RANGE + e);
+      } else if (s0 < -CLIP_THRESH) {
+        const e = -s0 - CLIP_THRESH;
+        out0[i] = -(CLIP_THRESH + CLIP_RANGE * e / (CLIP_RANGE + e));
       }
       if (stereo) {
         let s1 = out1[i];
-        if (s1 > 0.9) {
-          const e = s1 - 0.9;
-          out1[i] = 0.9 + 0.08 * e / (0.08 + e);
-        } else if (s1 < -0.9) {
-          const e = -s1 - 0.9;
-          out1[i] = -(0.9 + 0.08 * e / (0.08 + e));
+        if (s1 > CLIP_THRESH) {
+          const e = s1 - CLIP_THRESH;
+          out1[i] = CLIP_THRESH + CLIP_RANGE * e / (CLIP_RANGE + e);
+        } else if (s1 < -CLIP_THRESH) {
+          const e = -s1 - CLIP_THRESH;
+          out1[i] = -(CLIP_THRESH + CLIP_RANGE * e / (CLIP_RANGE + e));
         }
       }
     }
