@@ -35,6 +35,14 @@ const Editor = memo(({
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(null);
 
+  // 窄屏（< 768px）自动折叠 TrackPanel，避免挤压 PianoRoll
+  // 初次进入 Editor 时检测一次；不监听 resize 是为了避免频繁切换打断编辑
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setPanelCollapsed(true);
+    }
+  }, []);
+
   // 缓存 ghostTracks，避免每次渲染都创建新数组
   const ghostTracks = useMemo(() => 
     tracks.filter(t => t.id !== currentTrackId).map(t => ({ track: t, color: t.color || '#888' })),
@@ -122,7 +130,7 @@ const Editor = memo(({
   }, [onNewProject, handleImportMidi, onSaveProject, onExportMidi, undo, redo, audioEngine.isPlaying, audioEngine, tracks, bpm]);
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <MenuBar
         onNewProject={onNewProject}
         onEmbedMidi={onEmbedMidi}
@@ -153,23 +161,21 @@ const Editor = memo(({
         performanceInfo={audioEngine.performanceInfo}
       />
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 6, gap: 6, minHeight: 0 }}>
-        {mode === 'touch' && (
-          <button
-            onClick={() => setPanelCollapsed(v => !v)}
-            title={panelCollapsed ? (lang === 'zh' ? '展开轨道面板' : 'Expand Track Panel') : (lang === 'zh' ? '折叠轨道面板' : 'Collapse Track Panel')}
-            style={{
-              padding: '4px 6px',
-              fontSize: '0.7rem',
-              borderRadius: '4px 0 0 4px',
-              alignSelf: 'flex-start',
-              flexShrink: 0,
-              marginTop: 4,
-            }}
-          >
-            {panelCollapsed ? <Icons.Right /> : <Icons.Left />}
-          </button>
-        )}
-        <div className={mode === 'touch' && panelCollapsed ? 'track-panel-collapsed' : ''}>
+        <button
+          onClick={() => setPanelCollapsed(v => !v)}
+          title={panelCollapsed ? (lang === 'zh' ? '展开轨道面板' : 'Expand Track Panel') : (lang === 'zh' ? '折叠轨道面板' : 'Collapse Track Panel')}
+          style={{
+            padding: '4px 6px',
+            fontSize: '0.7rem',
+            borderRadius: '4px 0 0 4px',
+            alignSelf: 'flex-start',
+            flexShrink: 0,
+            marginTop: 4,
+          }}
+        >
+          {panelCollapsed ? <Icons.Right /> : <Icons.Left />}
+        </button>
+        <div className={panelCollapsed ? 'track-panel-collapsed' : ''} style={{ display: panelCollapsed ? 'none' : 'contents' }}>
           <TrackPanel
             tracks={tracks}
             currentTrackId={currentTrackId}

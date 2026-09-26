@@ -50,15 +50,27 @@
   --green-hover: #5a8a5a;
 }
 
+html, body {
+  height: 100%;
+}
+/* 100dvh 替代 100vh：移动端浏览器工具栏弹出/收起时不会遮挡内容 */
 body {
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  height: 100vh;
+  height: 100vh; /* 老浏览器回退 */
+  height: 100dvh;
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
+  /* iOS 安全区（刘海/底部 Home Bar） */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
+
+/* 防止 iOS 双击缩放 / 长按选择菜单 */
+* { -webkit-touch-callout: none; }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -275,6 +287,27 @@ input[type="radio"] { accent-color: var(--text-muted); }
   button { padding: 3px 7px; font-size: 0.7rem; }
   .edit-toolbar { margin-left: 4px; }
   input, select { font-size: 0.7rem; padding: 3px 6px; }
+  /* Transport 控制条换行优化 */
+  .controls-bar { gap: 6px !important; padding: 4px 6px !important; }
+  /* 模态框在小屏占满 95vw */
+  .modal-content { max-width: 95vw; max-height: 90vh; padding: 14px; }
+}
+
+/* 极小屏幕（手机竖屏）桌面模式也允许菜单换行 */
+@media (max-width: 600px) {
+  .menu-bar { flex-wrap: wrap; height: auto; max-height: 96px; overflow-x: auto; overflow-y: hidden; padding: 2px 4px; gap: 2px; }
+  .menu-item { padding: 4px 6px; min-height: 32px; font-size: 0.65rem; white-space: nowrap; }
+  button { min-height: 32px; min-width: 32px; padding: 3px 6px; }
+  .edit-toolbar button { padding: 3px 6px; min-height: 32px; }
+  /* 隐藏次要装饰文字（"BPM"/"R"等）以节省空间 */
+  .controls-bar label { font-size: 0.65rem; }
+  /* Modal 占满 */
+  .modal-content { min-width: 0; width: 95vw; }
+}
+
+/* 大屏桌面 + 触屏（Surface/触屏笔记本）：不强制 44px 触摸尺寸 */
+@media (min-width: 1024px) and (pointer: coarse) {
+  button { min-height: 36px; min-width: 36px; }
 }
 
 /* 触屏模式 */

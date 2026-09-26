@@ -85,7 +85,9 @@ export default function Transport({
   const handleSeekMouseDown = (e) => {
     setIsDragging(true);
     const rect = progressBarRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    // 兼容 mouse 和 touch 事件
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const x = clientX - rect.left;
     const percent = Math.max(0, Math.min(1, x / rect.width));
     const newTime = percent * totalDuration;
     onSeek(newTime);
@@ -96,17 +98,23 @@ export default function Transport({
     const handleMove = (e) => {
       if (!progressBarRef.current) return;
       const rect = progressBarRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const x = clientX - rect.left;
       const percent = Math.max(0, Math.min(1, x / rect.width));
       const newTime = percent * totalDuration;
       onSeek(newTime);
     };
     const handleUp = () => setIsDragging(false);
+    // 同时监听 mouse 和 touch 事件，确保触屏设备可拖动进度条
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
+    window.addEventListener('touchmove', handleMove, { passive: false });
+    window.addEventListener('touchend', handleUp);
     return () => {
       window.removeEventListener('mousemove', handleMove);
       window.removeEventListener('mouseup', handleUp);
+      window.removeEventListener('touchmove', handleMove);
+      window.removeEventListener('touchend', handleUp);
     };
   }, [isDragging, totalDuration, onSeek]);
 
@@ -143,11 +151,12 @@ export default function Transport({
         <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', minWidth: 28 }}>{Math.round(masterVolume * 100)}%</span>
       </div>
       <div style={{ flex: 1, minWidth: 120, display: 'flex', gap: 6, alignItems: 'center' }}>
-        <div 
+        <div
           ref={progressBarRef}
-          className="progress-bar" 
+          className="progress-bar"
           style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3, cursor: 'pointer', position: 'relative' }}
           onMouseDown={handleSeekMouseDown}
+          onTouchStart={handleSeekMouseDown}
         >
           <div ref={progressFillRef} className="progress-fill" style={{ width: '100%', transformOrigin: 'left center', transform: `scaleX(${totalDuration ? currentTime / totalDuration : 0})`, height: '100%', background: 'var(--accent-hover)', borderRadius: 3, pointerEvents: 'none', willChange: 'transform' }} />
         </div>

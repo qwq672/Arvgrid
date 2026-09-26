@@ -46,8 +46,10 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const canvasRef = useRef(null);
   const playheadCanvasRef = useRef(null);
   const containerRef = useRef(null);
-  const [zoomX, setZoomX] = useState(80);
-  const [zoomY, setZoomY] = useState(20);
+  // 小屏默认更紧凑的视图：zoomX 略小（更宽视野），zoomY 略小（更多行）
+  const isNarrow = typeof window !== 'undefined' && window.innerWidth < 768;
+  const [zoomX, setZoomX] = useState(isNarrow ? 60 : 80);
+  const [zoomY, setZoomY] = useState(isNarrow ? 16 : 20);
   const pinchStateRef = useRef(null); // 双指缩放状态
   const offsetXRef = useRef(0);
   const offsetYRef = useRef(0);
@@ -937,7 +939,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   }, []);
 
   // 钢琴键盘画布 - 真实钢琴外观（黑白键 3D 渐变 + 高光/阴影），仅在 zoomY 变化时重绘
-  const KEY_W = 64;
+  const KEY_W = isNarrow ? 48 : 64;
   useEffect(() => {
     const el = keyboardCanvasRef.current;
     if (!el) return;
@@ -949,7 +951,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const ctx = el.getContext('2d');
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.clearRect(0, 0, KEY_W, logicalH);
-    const blackW = 40;
+    const blackW = Math.max(28, Math.round(KEY_W * 0.625));
     const blackX = KEY_W - blackW;
     const rowH = zoomY;
     // 先画所有白键底色（黑键下方也铺白底，模拟白键延续）
@@ -1004,10 +1006,10 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   return (
     <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--bg)', borderRadius: 6, overflow: 'hidden', minHeight: 0 }}>
       {/* 工具栏 */}
-      <div style={{ padding: '3px 6px', display: 'flex', gap: 4, flexShrink: 0, background: 'var(--panel)', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
+      <div style={{ padding: '3px 6px', display: 'flex', gap: 4, flexShrink: 0, flexWrap: 'wrap', background: 'var(--panel)', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
         <button onClick={() => setZoomX(z => Math.min(300, z * 1.2))} title={t.zoomIn} style={{ padding: '2px 6px' }}><Icons.ZoomIn /></button>
         <button onClick={() => setZoomX(z => Math.max(20, z * 0.8))} title={t.zoomOut} style={{ padding: '2px 6px' }}><Icons.ZoomOut /></button>
-        <button onClick={() => { offsetXRef.current = 0; offsetYRef.current = 0; setZoomX(80); setZoomY(20); }} title={t.resetView} style={{ padding: '2px 6px' }}><Icons.Reset /></button>
+        <button onClick={() => { offsetXRef.current = 0; offsetYRef.current = 0; setZoomX(isNarrow ? 60 : 80); setZoomY(isNarrow ? 16 : 20); }} title={t.resetView} style={{ padding: '2px 6px' }}><Icons.Reset /></button>
         <button
           onClick={() => setShowGhosts(s => !s)}
           className={showGhosts ? 'active' : ''}

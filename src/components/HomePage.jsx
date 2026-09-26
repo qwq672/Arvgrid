@@ -17,7 +17,7 @@ export default function HomePage({
   
   return (
     <div style={{
-      height: '100vh',
+      height: '100dvh', // 现代浏览器：动态视口高度（移动端工具栏弹出/收起不遮挡）
       background: 'var(--bg)',
       display: 'flex',
       flexDirection: 'column',
@@ -34,13 +34,13 @@ export default function HomePage({
         theme={theme}
         onThemeChange={onThemeChange}
       />
-      
+
       <div style={{
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        padding: '20px',
+        padding: 'clamp(8px, 3vw, 20px)',
         overflow: 'auto'
       }}>
         <div style={{
@@ -48,14 +48,14 @@ export default function HomePage({
           width: '100%',
           background: 'var(--panel)',
           borderRadius: 16,
-          padding: 32,
+          padding: 'clamp(16px, 4vw, 32px)',
           textAlign: 'center',
           border: '1px solid var(--border)',
         }}>
           <div style={{ marginBottom: 12, color: 'var(--text)' }}>
             <Icons.Logo size={100} />
           </div>
-          <h1 style={{ fontSize: '2.5rem', marginBottom: 6, color: 'var(--text)', fontWeight: 300 }}>Arvgrid</h1>
+          <h1 style={{ fontSize: 'clamp(1.8rem, 6vw, 2.5rem)', marginBottom: 6, color: 'var(--text)', fontWeight: 300 }}>Arvgrid</h1>
           <p style={{ marginBottom: 28, color: 'var(--text-muted)', fontSize: '0.9rem' }}>{t.tagline}</p>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 28 }}>

@@ -212,7 +212,7 @@ export default function TrackPanel({
   };
 
   return (
-    <div style={{ width: 260, flexShrink: 0, flexDirection: 'column', background: 'var(--panel)', borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', display: 'flex' }}>
+    <div className="track-panel" style={{ width: 'clamp(180px, 22vw, 260px)', flexShrink: 0, flexDirection: 'column', background: 'var(--panel)', borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', display: 'flex' }}>
       {/* 头部 */}
       <div style={{ padding: '8px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)' }}>
         <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{t.tracks}</span>

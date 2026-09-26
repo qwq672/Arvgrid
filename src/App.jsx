@@ -15,7 +15,16 @@ export default function App() {
   const [recentProjects, setRecentProjects] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [midiInfoOpen, setMidiInfoOpen] = useState(false);
-  const [mode, setMode] = useState('desktop');
+  // 自动检测触屏设备：首次加载时根据 pointer / maxTouchPoints 决定默认 mode
+  // 已保存的偏好优先（不存在则自动检测）
+  const [mode, setMode] = useState(() => {
+    const saved = localStorage.getItem('arvgrid_mode');
+    if (saved === 'touch' || saved === 'desktop') return saved;
+    const hasTouch = (typeof navigator !== 'undefined' &&
+      (navigator.maxTouchPoints > 0 ||
+        (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)));
+    return hasTouch ? 'touch' : 'desktop';
+  });
   const [uiScale, setUiScale] = useState(() => {
     const saved = localStorage.getItem('arvgrid_ui_scale');
     return saved ? parseInt(saved) : 100;
@@ -239,6 +248,7 @@ export default function App() {
     localStorage.removeItem('arvgrid_sound_source');
     localStorage.removeItem('arvgrid_autosave_mode');
     localStorage.removeItem('arvgrid_lang');
+    localStorage.removeItem('arvgrid_mode');
     setAutoSaveMode({ type: 'onChange', interval: 0 });
     setUiScale(100);
     setLang('zh');
@@ -314,7 +324,11 @@ export default function App() {
         onLoadProject={handleLoadProjectFile}
         onNewProject={handleNewProject}
         onEmbedMidi={handleEmbedMidi}
-        onToggleMode={() => setMode(mode === 'desktop' ? 'touch' : 'desktop')}
+        onToggleMode={() => {
+          const next = mode === 'desktop' ? 'touch' : 'desktop';
+          setMode(next);
+          localStorage.setItem('arvgrid_mode', next);
+        }}
         onFullscreen={toggleFullscreen}
         mode={mode}
         settingsOpen={settingsOpen}
