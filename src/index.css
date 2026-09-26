@@ -282,9 +282,9 @@ input[type="radio"] { accent-color: var(--text-muted); }
 
 /* 响应式：小屏幕适配 */
 @media (max-width: 768px) {
-  /* menu-bar 不 wrap，改横向滚动，避免换行撑高挤压编辑区 */
-  .menu-bar { flex-wrap: nowrap; height: 36px; overflow-x: auto; overflow-y: hidden; padding: 0 4px; }
-  .menu-item { padding: 4px 8px; font-size: 0.7rem; flex-shrink: 0; }
+  /* menu-bar 保持 overflow: visible 让下拉菜单可见，菜单项可缩小适应宽度 */
+  .menu-bar { flex-wrap: nowrap; height: 36px; padding: 0 4px; overflow: visible; }
+  .menu-item { padding: 4px 8px; font-size: 0.7rem; flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   button { padding: 3px 7px; font-size: 0.7rem; flex-shrink: 0; }
   .edit-toolbar { margin-left: 4px; flex-shrink: 0; }
   input, select { font-size: 0.7rem; padding: 3px 6px; }
@@ -294,10 +294,10 @@ input[type="radio"] { accent-color: var(--text-muted); }
   .modal-content { max-width: 95vw; max-height: 90vh; padding: 14px; }
 }
 
-/* 极小屏幕（手机竖屏）— menu-bar 仍保持横向滚动，不换行 */
+/* 极小屏幕（手机竖屏）— menu-bar 保持 overflow visible，菜单项进一步缩小 */
 @media (max-width: 600px) {
-  .menu-bar { flex-wrap: nowrap; height: 36px; overflow-x: auto; overflow-y: hidden; padding: 0 4px; gap: 2px; }
-  .menu-item { padding: 4px 6px; min-height: 28px; font-size: 0.65rem; white-space: nowrap; flex-shrink: 0; }
+  .menu-bar { flex-wrap: nowrap; height: 36px; padding: 0 4px; gap: 2px; overflow: visible; }
+  .menu-item { padding: 4px 6px; min-height: 28px; font-size: 0.65rem; white-space: nowrap; flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   button { min-height: 28px; min-width: 28px; padding: 3px 6px; flex-shrink: 0; }
   .edit-toolbar button { padding: 3px 6px; min-height: 28px; }
   /* 隐藏次要装饰文字（"BPM"/"R"等）以节省空间 */
@@ -335,7 +335,7 @@ body.touch-mode .piano-roll-scroll,
 
 /* 触摸模式交互元素间距 */
 body.touch-mode .menu-bar,
-.touch-mode .menu-bar { gap: 2px; padding: 0 4px; height: 36px; overflow-x: auto; overflow-y: hidden; }
+.touch-mode .menu-bar { gap: 2px; padding: 0 4px; height: 36px; overflow: visible; }
 body.touch-mode .edit-toolbar button,
 .touch-mode .edit-toolbar button { padding: 4px 10px; min-height: 40px; }
 
@@ -361,11 +361,10 @@ body.touch-mode .transport button,
 @media (max-width: 600px) {
   body.touch-mode .menu-bar,
   .touch-mode .menu-bar {
-    /* 仍保持 nowrap，避免换行撑高 */
+    /* 保持 overflow visible，菜单项缩小适应宽度 */
     flex-wrap: nowrap;
     height: 36px;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: visible;
     padding: 0 4px;
     gap: 2px;
   }
