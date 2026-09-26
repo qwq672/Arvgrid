@@ -5,9 +5,9 @@ import { parseSF2 } from '../lib/sf2Parser';
 // 前瞻调度器默认参数
 const MAX_POLYPHONY = 32; // 复音数上限（仅限主线程合成器路径）
 const MIN_POLYPHONY = 12; // 自适应降级下限
-// SF2 worklet 运行在音频线程，复音数与主线程负载无关，独立设高值
-// 避免"主线程卡顿→adaptivePolyphony 下降→worklet voice stealing→音符丢失"的回归
-const WORKLET_POLYPHONY = 128;
+// SF2 worklet 运行在音频线程，复音数与主线程负载无关
+// v6: 128 → 64，减少 voice stealing 遍历开销，移动设备更流畅
+const WORKLET_POLYPHONY = 64;
 
 // 检测设备 CPU 核心数，用于初始化复音数
 const CPU_CORES = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
@@ -24,10 +24,10 @@ const IS_MOBILE = (typeof navigator !== 'undefined' && typeof window !== 'undefi
 );
 
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
-// 更大的 lookahead 和更短的 interval 可以减少卡顿
+// v6: 移动设备 medium 提高到 33ms（约 30fps），减少主线程 scheduler 频率
 const BUFFER_PRESETS = {
   short: [0.10, 15],   // 低延迟模式：lookahead 100ms，scheduler 15ms
-  medium: [0.25, 25],  // 平衡模式
+  medium: [0.30, 33],  // 平衡模式（移动设备默认）：33ms 减少主线程占用
   long: [0.5, 40],     // 高稳定性模式
   ultra: [1.0, 50],    // 极致稳定模式（高内存占用）
 };
@@ -192,11 +192,11 @@ export function useAudioEngine() {
     // 注册 SF2 AudioWorklet：单 processor 实例 + 内部 voice pool
     // 替代每个音符创建 BufferSource+Gain 的节点模型，100 同时发声从 200+ 节点降为 1 节点
     try {
-      // 加版本号查询串强制浏览器加载最新 worklet 代码（worklet 模块会被强缓存，
-      // 旧版 harsh soft-clip 代码不更新会导致"音量调到1%仍爆音"问题）
+      // 加版本号查询串强制浏览器加载最新 worklet 代码（worklet 模块会被强缓存）
       // v4: 三次插值 + SF2 循环点 + 真实 ADSR
       // v5: 循环回卷用 modulo 防止高音跳跃、软限幅阈值 0.9→0.95
-      const workletUrl = new URL('worklets/sf2-processor.js?v=5', location.href).href;
+      // v6: 线性插值替代三次（CPU 减半）、WORKLET_POLYPHONY 128→64
+      const workletUrl = new URL('worklets/sf2-processor.js?v=6', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,
@@ -635,9 +635,10 @@ export function useAudioEngine() {
       schedulerLag = Math.max(0, now - nextEventScheduled);
     }
 
-    // 节流更新性能信息（每 500ms 最多更新一次）
+    // 节流更新性能信息（每 2 秒最多更新一次，减少 React re-render）
+    // 之前 500ms 触发一次会引发 Editor → MenuBar → PianoRoll 重渲染链，加重 UI 卡顿
     const elapsedSinceLastUpdate = now - lastPerfUpdateRef.current;
-    if (elapsedSinceLastUpdate > 0.5) {
+    if (elapsedSinceLastUpdate > 2.0) {
       lastPerfUpdateRef.current = now;
       const mem = performance.memory?.usedJSHeapSize / 1048576 || 0;
       let level = 'low';
