@@ -282,9 +282,9 @@ input[type="radio"] { accent-color: var(--text-muted); }
 
 /* 响应式：小屏幕适配 */
 @media (max-width: 768px) {
-  /* menu-bar 保持 overflow: visible 让下拉菜单可见，菜单项可缩小适应宽度 */
+  /* menu-bar 保持 overflow visible 让下拉菜单可见 */
   .menu-bar { flex-wrap: nowrap; height: 36px; padding: 0 4px; overflow: visible; }
-  .menu-item { padding: 4px 8px; font-size: 0.7rem; flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .menu-item { padding: 4px 8px; font-size: 0.7rem; flex-shrink: 0; }
   button { padding: 3px 7px; font-size: 0.7rem; flex-shrink: 0; }
   .edit-toolbar { margin-left: 4px; flex-shrink: 0; }
   input, select { font-size: 0.7rem; padding: 3px 6px; }
@@ -294,16 +294,18 @@ input[type="radio"] { accent-color: var(--text-muted); }
   .modal-content { max-width: 95vw; max-height: 90vh; padding: 14px; }
 }
 
-/* 极小屏幕（手机竖屏）— menu-bar 保持 overflow visible，菜单项进一步缩小 */
+/* 极小屏幕（手机竖屏）— menu-bar 保持 overflow visible，菜单项缩小但不截断 */
 @media (max-width: 600px) {
   .menu-bar { flex-wrap: nowrap; height: 36px; padding: 0 4px; gap: 2px; overflow: visible; }
-  .menu-item { padding: 4px 6px; min-height: 28px; font-size: 0.65rem; white-space: nowrap; flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .menu-item { padding: 4px 6px; min-height: 28px; font-size: 0.65rem; white-space: nowrap; flex-shrink: 0; }
   button { min-height: 28px; min-width: 28px; padding: 3px 6px; flex-shrink: 0; }
   .edit-toolbar button { padding: 3px 6px; min-height: 28px; }
   /* 隐藏次要装饰文字（"BPM"/"R"等）以节省空间 */
   .controls-bar label { font-size: 0.65rem; }
   /* Modal 占满 */
   .modal-content { min-width: 0; width: 95vw; }
+  /* 窄屏隐藏示波器，给菜单项让位 */
+  .osc-container { display: none !important; }
 }
 
 /* 大屏桌面 + 触屏（Surface/触屏笔记本）：不强制 44px 触摸尺寸 */

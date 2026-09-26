@@ -1,6 +1,11 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
+import { parseSF2WithWasm, isWasmSupported } from '../lib/wasmBackend';
+
+// 实验性 WASM 后端开关（从 localStorage 读取，默认关闭）
+const WASM_ENABLED = (typeof localStorage !== 'undefined') &&
+  localStorage.getItem('arvgrid_wasm_backend') === '1';
 
 // 前瞻调度器默认参数
 const MAX_POLYPHONY = 32; // 复音数上限（仅限主线程合成器路径）
@@ -101,8 +106,13 @@ export function useAudioEngine() {
 
   const initAudio = useCallback(async () => {
     if (audioCtxRef.current) return audioCtxRef.current;
-    // latencyHint: 'interactive'（默认）适合低延迟交互场景，编曲工具优先
-    const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    // 移动设备限制 sampleRate 到 44100Hz（默认可能是 48000）
+    // CPU 占用减少 ~10%，音质差异人耳难察觉
+    const ctxOptions = { latencyHint: 'interactive' };
+    if (IS_MOBILE) {
+      ctxOptions.sampleRate = 44100;
+    }
+    const ctx = new (window.AudioContext || window.webkitAudioContext)(ctxOptions);
     audioCtxRef.current = ctx;
 
     const master = ctx.createGain();
@@ -1012,23 +1022,45 @@ export function useAudioEngine() {
     loadSF2: async (arrayBuffer, onProgress) => {
       await initAudio();
       try {
-        // 阶段 1：在 Web Worker 里解析 SF2（不卡主线程）
-        // 之前 parseSF2 同步跑在主线程，10MB SF2 卡 2-3 秒
+        // 阶段 1：解析 SF2
+        // 优先级：WASM（实验性）→ Web Worker（JS）→ 主线程（fallback）
         if (onProgress) onProgress({ stage: 'parsing', percent: 0 });
         let sf2Data;
         let parseMs = 0;
-        try {
-          const result = await parseSF2InWorker(arrayBuffer, (p) => {
-            if (onProgress) onProgress({ stage: 'parsing', percent: p });
-          });
-          sf2Data = result.sf2Data;
-          parseMs = result.parseMs;
-        } catch (err) {
-          // Worker 加载失败（极旧浏览器）回退到主线程解析
-          console.warn('[arvgrid] SF2 worker failed, fallback to main thread:', err);
-          sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
+        let usedWasm = false;
+
+        // 尝试 WASM 后端（如果用户在设置里开启）
+        if (WASM_ENABLED && isWasmSupported()) {
+          try {
+            if (onProgress) onProgress({ stage: 'wasm-loading', percent: 0 });
+            const t0 = performance.now();
+            sf2Data = await parseSF2WithWasm(arrayBuffer, (stage, percent) => {
+              if (onProgress) onProgress({ stage: 'wasm-' + stage, percent });
+            });
+            parseMs = Math.round(performance.now() - t0);
+            usedWasm = true;
+            if (onProgress) onProgress({ stage: 'parsing', percent: 100, parseMs, backend: 'wasm' });
+          } catch (err) {
+            console.warn('[arvgrid] WASM SF2 parse failed, fallback to JS:', err);
+            if (onProgress) onProgress({ stage: 'wasm-fallback', message: err.message });
+          }
         }
-        if (onProgress) onProgress({ stage: 'parsing', percent: 100, parseMs });
+
+        // WASM 未启用或失败，使用 Web Worker（JS 解析）
+        if (!sf2Data) {
+          try {
+            const result = await parseSF2InWorker(arrayBuffer, (p) => {
+              if (onProgress) onProgress({ stage: 'parsing', percent: p });
+            });
+            sf2Data = result.sf2Data;
+            parseMs = result.parseMs;
+          } catch (err) {
+            // Worker 加载失败（极旧浏览器）回退到主线程解析
+            console.warn('[arvgrid] SF2 worker failed, fallback to main thread:', err);
+            sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
+          }
+          if (onProgress) onProgress({ stage: 'parsing', percent: 100, parseMs, backend: 'js' });
+        }
 
         sf2DataRef.current = sf2Data;
         sf2BuffersRef.current = {};

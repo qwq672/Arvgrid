@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo } from 'react';
 import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 
-export default function MenuBar({
+const MenuBar = memo(function MenuBar({
   onNewProject, onImportMidi, onEmbedMidi, onExportMidi, onExportAudio, onSaveProject, onLoadProject,
   onOpenMidiInfo, onUndo, onRedo, onQuantize, onClearTrack,
   onOpenSettings, onToggleMode, onFullscreen, mode, onExitToHome,
@@ -81,8 +81,9 @@ export default function MenuBar({
     let lastDrawTs = 0;
     const draw = (ts) => {
       oscRafRef.current = requestAnimationFrame(draw);
-      // 节流到 ~30fps，降低主线程开销
-      if (ts - lastDrawTs < 33) return;
+      // 节流到 ~15fps（66ms），减少移动设备主线程开销
+      // 示波器只是装饰性反馈，15fps 完全够用
+      if (ts - lastDrawTs < 66) return;
       lastDrawTs = ts;
       const analyser = analyserNodeRef?.current;
       if (!analyser || !ctx || !canvas) {
@@ -255,10 +256,12 @@ export default function MenuBar({
         </div>
       )}
 
-      {/* 示波器 */}
-      <div style={{ flex: 1, minWidth: 60, maxWidth: 300, height: '100%', display: 'flex', alignItems: 'center', marginLeft: 'auto', padding: '2px 0' }}>
+      {/* 示波器 - 窄屏隐藏，给菜单让位 */}
+      <div style={{ flex: 1, minWidth: 0, maxWidth: 300, height: '100%', display: 'flex', alignItems: 'center', marginLeft: 'auto', padding: '2px 0', overflow: 'hidden' }} className="osc-container">
         <canvas ref={oscCanvasRef} style={{ width: '100%', height: '100%', borderRadius: 3, background: '#0a0a0e', border: '1px solid var(--border)' }} />
       </div>
     </div>
   );
-}
+});
+
+export default MenuBar;
