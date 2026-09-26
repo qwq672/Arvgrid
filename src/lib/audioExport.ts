@@ -227,6 +227,20 @@ export async function renderAudioBuffer(
             renderSF2Note(offlineCtx, master, whenSec, duration, velocity, midi, bestSample, isDrum, trackVol);
             rendered = true;
             sf2SuccessCount++;
+          } else {
+            // SF2 样本 audioBuffer 创建失败（pcmData 可能 detached），fallback 到合成器
+            const synthRendered = renderSynthNote(offlineCtx, master, whenSec, duration, velocity, midi, program, isDrum, trackVol);
+            if (synthRendered) {
+              synthFallbackCount++;
+              rendered = true;
+            }
+          }
+        } else {
+          // 没找到 sample，fallback 到合成器
+          const synthRendered = renderSynthNote(offlineCtx, master, whenSec, duration, velocity, midi, program, isDrum, trackVol);
+          if (synthRendered) {
+            synthFallbackCount++;
+            rendered = true;
           }
         }
       }
@@ -271,7 +285,22 @@ export async function renderAudioBuffer(
   }
 
   // 渲染音频
-  const renderedBuffer = await offlineCtx.startRendering();
+  // 注意：startRendering 是同步阻塞调用，但返回 Promise
+  // 如果音符数过多或 release 时间过长，可能耗时很长（不会真正卡死，只是慢）
+  // 加 30 秒超时保护，避免用户无限制等待
+  let renderedBuffer: AudioBuffer;
+  try {
+    renderedBuffer = await Promise.race([
+      offlineCtx.startRendering(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('渲染超时（30s），可能音符数过多或 SF2 数据异常')), 30000)
+      ),
+    ]);
+  } catch (err) {
+    // 关闭 offlineCtx 释放资源
+    try { (offlineCtx as any).close?.(); } catch {}
+    throw err;
+  }
 
   return renderedBuffer;
 }
@@ -325,9 +354,10 @@ function renderSF2Note(
     // 旋律乐器：完整 ADSR
     const attackSec = Math.max(0.001, Math.min(2.0, sample.attackSec || 0.001));
     const holdSec = Math.max(0, Math.min(2.0, sample.holdSec || 0));
-    const decaySec = Math.max(0, Math.min(8.0, sample.decaySec || 0));
+    const decaySec = Math.max(0, Math.min(4.0, sample.decaySec || 0));
     const sustainPerc = Math.max(0, Math.min(1, sample.sustainPerc ?? 1));
-    const releaseSec = Math.max(0.02, Math.min(8.0, sample.releaseSec || 0.1));
+    // release 限制在 4 秒内（导出路径），避免长尾音让 OfflineAudioContext 渲染时间爆炸
+    const releaseSec = Math.max(0.02, Math.min(4.0, sample.releaseSec || 0.1));
 
     // Attack
     gain.gain.setValueAtTime(0.0001, whenSec);
