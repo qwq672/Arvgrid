@@ -4,6 +4,12 @@
 //
 // 注意：此 worker 通过 Vite 的 `new Worker(new URL(...), { type: 'module' })` 加载
 // 构建时会被自动 chunk 化，运行时是纯本地后台线程，不依赖任何服务器
+//
+// ⚠️ 不使用 transferable：sf2Parser 的 createSampleObj 通过 pcmCache 让多个 sampleObj 共享
+// 同一 pcmData（Int16Array）。postMessage 结构化克隆时不保留共享关系，
+// 会导致多个 sampleObj.pcmData 指向不同的 Int16Array 副本，但 transferList 只 transfer 一份，
+// 其余指向 detached buffer，主线程访问时报错 "Cannot perform Construct on a detached ArrayBuffer"。
+// 改为结构化克隆（默认行为），让浏览器内部高效复制 Int16Array，确保所有引用都可用。
 
 import { parseSF2 } from '../lib/sf2Parser';
 
@@ -17,30 +23,14 @@ self.onmessage = async (e) => {
     const sf2Data = parseSF2(arrayBuffer);
     const parseMs = Math.round(performance.now() - t0);
 
-    // sf2Data.presets 里的 sampleObj 包含 pcmData (Int16Array)
-    // postMessage 会结构化克隆，但通过 transferable 可零拷贝传递所有权
-    // 收集所有 unique pcmData buffer 用于 transfer
-    const transferList = [];
-    if (sf2Data && sf2Data.presets) {
-      const seen = new Set();
-      for (const preset of sf2Data.presets) {
-        if (!preset.sampleIndex) continue;
-        for (let m = 0; m < 128; m++) {
-          const sampleObj = preset.sampleIndex[m];
-          if (!sampleObj || !sampleObj.pcmData) continue;
-          if (!seen.has(sampleObj.pcmData)) {
-            seen.add(sampleObj.pcmData);
-            transferList.push(sampleObj.pcmData.buffer);
-          }
-        }
-      }
-    }
-
+    // 不传 transferList，使用默认结构化克隆
+    // 结构化克隆会复制每个 Int16Array，主线程拿到的是全新独立副本
+    // 性能损耗：400MB SF2 大约多 100-200ms，但保证数据可用
     self.postMessage({
       type: 'parse-success',
       sf2Data,
       parseMs,
-    }, transferList);
+    });
   } catch (err) {
     self.postMessage({
       type: 'parse-error',
@@ -49,3 +39,4 @@ self.onmessage = async (e) => {
     });
   }
 };
+

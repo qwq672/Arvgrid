@@ -1111,9 +1111,10 @@ async function parseSF2InWorker(arrayBuffer, onProgress) {
       cleanup();
       reject(new Error(err.message || 'Worker error'));
     };
-    // 解析是大块同步任务，worker 内部无法实时报进度
-    // 但因为不在主线程，UI 不会冻结
-    worker.postMessage({ type: 'parse-sf2', arrayBuffer }, [arrayBuffer]);
+    // 不传 transferList：让结构化克隆完整复制 arrayBuffer
+    // worker 解析完后会再 postMessage 回主线程，再传一次（也是结构化克隆）
+    // 400MB SF2 多 100-200ms 开销可接受，避免 transferable 导致的 detached buffer 问题
+    worker.postMessage({ type: 'parse-sf2', arrayBuffer });
   });
 }
 
@@ -1159,11 +1160,20 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgre
   for (let i = 0; i < tasks.length; i++) {
     const entry = tasks[i];
     const pcmData = entry.pcmData;
-    const length = pcmData.length;
+    // 防御：检查 pcmData 是否已 detached（极少数情况，比如内存压力下浏览器回收）
+    // detached 的 Int16Array length 为 0，构造新 Int16Array 会抛 detached 错误
+    let length;
+    try {
+      length = pcmData.length;
+    } catch (e) {
+      console.warn('[arvgrid] sample pcmData detached, skipping:', e.message);
+      continue;
+    }
+    if (length === 0) continue;
 
     // 直接传输 Int16Array 副本（2字节/样本），worklet 内部用预乘 _INV_32768 转换
     // 相比 Float32Array（4字节/样本）节省 50% worklet 内存，且零额外 CPU 开销
-    // 注意：从 worker 返回的 pcmData 已经是 transferable 后的新实例，这里 copy 一份再 transfer
+    // 注意：从 worker 返回的 pcmData 已经是结构化克隆后的新实例，这里 copy 一份再 transfer
     // 保留原 pcmData 供 audioExport.ts 离线渲染使用
     const int16Copy = new Int16Array(pcmData);
 
