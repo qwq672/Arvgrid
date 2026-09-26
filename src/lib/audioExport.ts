@@ -331,13 +331,9 @@ function renderSF2Note(
   const playbackRate = Math.pow(2, semitoneOffset / 12);
   source.playbackRate.value = playbackRate;
 
-  // 循环点：如果样本有 loop，且 note duration 超过样本自身长度，启用循环
-  // BufferSource 的 loop 模式：循环播放 [loopStart, loopEnd] 区间
-  if (sample.hasLoop && !isDrum && sample.loopEnd > sample.loopStart) {
-    source.loop = true;
-    source.loopStart = sample.loopStart / (sample.sampleRate || 44100);
-    source.loopEnd = sample.loopEnd / (sample.sampleRate || 44100);
-  }
+  // ⚠️ 导出路径不使用 loop：OfflineAudioContext 处理 source.loop 在某些浏览器会卡死
+  // 持续音符（弦乐/铜管）如果样本短，会在 note duration 内静音——这是已知限制，可接受
+  // 实时播放路径（worklet）仍支持 loop
 
   // ADSR 包络（与 worklet 一致）
   const gain = ctx.createGain();
@@ -347,19 +343,20 @@ function renderSF2Note(
 
   if (isDrum) {
     // 鼓组：快速衰减，无 sustain
+    // 用 linearRamp 替代 setTargetAtTime，OfflineAudioContext 处理线性 ramp 更快
     gain.gain.setValueAtTime(0.0001, whenSec);
-    gain.gain.setTargetAtTime(peakVol, whenSec, 0.002);
-    gain.gain.setTargetAtTime(0.0001, whenSec + 0.05, 0.05);
+    gain.gain.linearRampToValueAtTime(peakVol, whenSec + 0.002);
+    gain.gain.linearRampToValueAtTime(0.0001, whenSec + 0.15);
   } else {
     // 旋律乐器：完整 ADSR
-    const attackSec = Math.max(0.001, Math.min(2.0, sample.attackSec || 0.001));
-    const holdSec = Math.max(0, Math.min(2.0, sample.holdSec || 0));
-    const decaySec = Math.max(0, Math.min(4.0, sample.decaySec || 0));
+    const attackSec = Math.max(0.001, Math.min(1.0, sample.attackSec || 0.001));
+    const holdSec = Math.max(0, Math.min(1.0, sample.holdSec || 0));
+    const decaySec = Math.max(0, Math.min(2.0, sample.decaySec || 0));
     const sustainPerc = Math.max(0, Math.min(1, sample.sustainPerc ?? 1));
-    // release 限制在 4 秒内（导出路径），避免长尾音让 OfflineAudioContext 渲染时间爆炸
-    const releaseSec = Math.max(0.02, Math.min(4.0, sample.releaseSec || 0.1));
+    // release 限制在 2 秒内（导出路径），避免长尾音让渲染时间爆炸
+    const releaseSec = Math.max(0.02, Math.min(2.0, sample.releaseSec || 0.1));
 
-    // Attack
+    // 用 linearRamp 替代 setTargetAtTime，减少自动化事件数
     gain.gain.setValueAtTime(0.0001, whenSec);
     gain.gain.linearRampToValueAtTime(peakVol, whenSec + attackSec);
     // Hold
@@ -368,20 +365,22 @@ function renderSF2Note(
     }
     // Decay
     const sustainVol = peakVol * sustainPerc;
-    gain.gain.setTargetAtTime(sustainVol, whenSec + attackSec + holdSec, Math.max(0.001, decaySec / 3));
+    if (decaySec > 0) {
+      gain.gain.linearRampToValueAtTime(sustainVol, whenSec + attackSec + holdSec + decaySec);
+    }
     // Sustain 到 note duration
     gain.gain.setValueAtTime(sustainVol, whenSec + duration);
     // Release
-    gain.gain.setTargetAtTime(0.0001, whenSec + duration, releaseSec / 3);
+    gain.gain.linearRampToValueAtTime(0.0001, whenSec + duration + releaseSec);
   }
 
   source.connect(gain);
   gain.connect(destination);
 
   source.start(whenSec);
-  // 停止时间：note duration + release + 余量
-  const releaseSec = isDrum ? 0.1 : (sample.releaseSec || 0.1);
-  source.stop(whenSec + duration + releaseSec + 0.1);
+  // 停止时间：note duration + release（限制 2 秒）+ 余量
+  const stopRelease = isDrum ? 0.2 : Math.min(2.0, sample.releaseSec || 0.1);
+  source.stop(whenSec + duration + stopRelease + 0.1);
 }
 
 /**
@@ -416,14 +415,17 @@ function renderSynthNote(
 
   // 旋律乐器 ADSR
   const { attack = 0.005, decay = 0.05, sustain = 0.5, release = 0.1 } = preset;
-  const tc = 0.003;
+  // 限制 release 在 2 秒内（导出路径）
+  const safeRelease = Math.min(release, 2.0);
+  const safeDecay = Math.min(decay, 2.0);
   masterGain.gain.setValueAtTime(0.0001, whenSec);
-  masterGain.gain.setTargetAtTime(safeVol, whenSec, tc);
-  const decayEnd = whenSec + attack + decay;
-  masterGain.gain.setTargetAtTime(safeVol * Math.max(sustain, 0.001), decayEnd, tc);
+  masterGain.gain.linearRampToValueAtTime(safeVol, whenSec + attack);
+  const decayEnd = whenSec + attack + safeDecay;
+  const sustainVol = safeVol * Math.max(sustain, 0.001);
+  masterGain.gain.linearRampToValueAtTime(sustainVol, decayEnd);
   const noteEnd = whenSec + duration;
-  masterGain.gain.setValueAtTime(safeVol * Math.max(sustain, 0.001), noteEnd);
-  masterGain.gain.setTargetAtTime(0.0001, noteEnd, tc);
+  masterGain.gain.setValueAtTime(sustainVol, noteEnd);
+  masterGain.gain.linearRampToValueAtTime(0.0001, noteEnd + safeRelease);
 
   // 谐波振荡器
   const harmonics = preset.harmonics || [1];
@@ -474,7 +476,23 @@ function renderSynthNote(
 
 /**
  * 鼓组音符渲染（合成器路径）
+ * ⚠️ noise buffer 模块级缓存：避免每个鼓音符都创建新 buffer（500 个鼓 = 500 个 88KB buffer = 内存爆炸）
  */
+let _cachedNoiseBuffer: AudioBuffer | null = null;
+let _cachedNoiseCtx: OfflineAudioContext | null = null;
+
+function getNoiseBuffer(ctx: OfflineAudioContext): AudioBuffer {
+  // 不同的 OfflineAudioContext 不能共享 buffer，所以需要按 ctx 缓存
+  if (_cachedNoiseBuffer && _cachedNoiseCtx === ctx) return _cachedNoiseBuffer;
+  _cachedNoiseCtx = ctx;
+  _cachedNoiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+  const noiseData = _cachedNoiseBuffer.getChannelData(0);
+  for (let i = 0; i < noiseData.length; i++) {
+    noiseData[i] = Math.random() * 2 - 1;
+  }
+  return _cachedNoiseBuffer;
+}
+
 function renderDrumNote(
   ctx: OfflineAudioContext,
   destination: AudioNode,
@@ -484,14 +502,9 @@ function renderDrumNote(
 ): void {
   const { attack = 0.001, decay = 0.05, release = 0.05, freq, isCymbal, isMetallic, isShaker } = preset;
   const safeVol = Math.min(vol, 0.35);
-  const tc = 0.002;
 
-  // 噪声缓冲（鼓组必需）
-  const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
-  const noiseData = noiseBuffer.getChannelData(0);
-  for (let i = 0; i < noiseData.length; i++) {
-    noiseData[i] = Math.random() * 2 - 1;
-  }
+  // 复用模块级 noise buffer（关键性能优化）
+  const noiseBuffer = getNoiseBuffer(ctx);
 
   if (isShaker) {
     const source = ctx.createBufferSource();
@@ -500,9 +513,10 @@ function renderDrumNote(
     hpf.type = 'highpass';
     hpf.frequency.value = 6000;
     const gain = ctx.createGain();
+    // linearRamp 替代 setTargetAtTime，减少自动化事件
     gain.gain.setValueAtTime(0.0001, whenSec);
-    gain.gain.setTargetAtTime(safeVol * 0.3, whenSec + attack, tc);
-    gain.gain.setTargetAtTime(0.0001, whenSec + decay + release, tc);
+    gain.gain.linearRampToValueAtTime(safeVol * 0.3, whenSec + attack + 0.005);
+    gain.gain.linearRampToValueAtTime(0.0001, whenSec + decay + release);
     source.connect(hpf);
     hpf.connect(gain);
     gain.connect(destination);
@@ -520,8 +534,8 @@ function renderDrumNote(
     bpf.Q.value = isMetallic ? 20 : 5;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, whenSec);
-    gain.gain.setTargetAtTime(safeVol * 0.25, whenSec + attack, tc);
-    gain.gain.setTargetAtTime(0.0001, whenSec + decay + release + 0.1, tc);
+    gain.gain.linearRampToValueAtTime(safeVol * 0.25, whenSec + attack + 0.005);
+    gain.gain.linearRampToValueAtTime(0.0001, whenSec + decay + release + 0.1);
     noiseSource.connect(bpf);
     bpf.connect(gain);
     gain.connect(destination);
@@ -539,8 +553,8 @@ function renderDrumNote(
   noiseFilter.Q.value = 1.5;
   const noiseGain = ctx.createGain();
   noiseGain.gain.setValueAtTime(0.0001, whenSec);
-  noiseGain.gain.setTargetAtTime(safeVol * 0.4, whenSec + attack, tc);
-  noiseGain.gain.setTargetAtTime(0.0001, whenSec + decay + 0.02, tc);
+  noiseGain.gain.linearRampToValueAtTime(safeVol * 0.4, whenSec + attack + 0.005);
+  noiseGain.gain.linearRampToValueAtTime(0.0001, whenSec + decay + 0.02);
   noiseSource.connect(noiseFilter);
   noiseFilter.connect(noiseGain);
   noiseGain.connect(destination);
