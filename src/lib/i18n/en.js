@@ -41,6 +41,18 @@ export default {
   perfNormal: 'Performance: Normal',
   perfWarn: 'Performance: Warning',
   perfCritical: 'Performance: Critical',
+  // SF2 loading dialog
+  sf2LoadingParsing: 'Parsing SF2 (background thread)...',
+  sf2LoadingTransferring: 'Transferring samples to audio thread...',
+  sf2LoadingDone: 'Loaded',
+  sf2LoadingFailed: 'Load failed',
+  sf2ParseTime: 'Parsed in',
+  // Export stages
+  exportRendering: 'Rendering audio...',
+  exportFinalizing: 'Synthesizing audio (please wait)...',
+  exportEncoding: 'Encoding...',
+  exportComplete: 'Complete!',
+  exportProcessing: 'Processing...',
   quantize8th: 'Quantize 1/8',
   quantize4th: 'Quantize 1/4',
   quantizeHalf: 'Quantize 1/2',

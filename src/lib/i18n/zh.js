@@ -41,6 +41,18 @@ export default {
   perfNormal: '性能正常',
   perfWarn: '性能警告',
   perfCritical: '性能告急',
+  // SF2 加载进度对话框
+  sf2LoadingParsing: '正在解析 SF2（后台线程）…',
+  sf2LoadingTransferring: '正在传输样本到音频线程…',
+  sf2LoadingDone: '加载完成',
+  sf2LoadingFailed: '加载失败',
+  sf2ParseTime: '解析耗时',
+  // 导出阶段
+  exportRendering: '正在渲染音频…',
+  exportFinalizing: '正在合成音频（请稍候）…',
+  exportEncoding: '正在编码…',
+  exportComplete: '完成！',
+  exportProcessing: '处理中…',
   quantize8th: '量化为1/8',
   quantize4th: '量化为1/4',
   quantizeHalf: '量化为1/2',
