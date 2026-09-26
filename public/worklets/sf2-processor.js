@@ -11,12 +11,18 @@
 // - 旋律 release 尾声早期终止（env < 阈值 → done）
 // - voice 对象池（消除 GC 压力）
 // - 支持 Int16Array 样本（内存减半，零额外 CPU：32768inv 预乘入 peakGain）
+//
+// v4 改进：
+// - 三次插值（Catmull-Rom）替代线性插值，高频/低音区不再有数字失真感
+// - 支持 SF2 循环点（持续音符如弦乐/铜管在 note duration 期间循环播放）
+// - 真实 ADSR 包络（从 SF2 读取 attack/hold/decay/sustain/release）
 
 // 包络常量（全局预计算）
-const _ATTACK_SAMPLES = Math.floor(0.020 * sampleRate);
-const _RELEASE_SAMPLES = Math.floor(0.080 * sampleRate);
+const _ATTACK_SAMPLES_DEFAULT = Math.floor(0.020 * sampleRate);
+const _RELEASE_SAMPLES_DEFAULT = Math.floor(0.080 * sampleRate);
 const _DRUM_MAX_SAMPLES = Math.floor(0.5 * sampleRate);
 const _INV_32768 = 1 / 32768;  // Int16 → Float32 转换因子
+const _ENV_DONE_THRESHOLD = 0.0000001;
 
 class SF2Processor extends AudioWorkletProcessor {
   constructor() {
@@ -108,9 +114,28 @@ class SF2Processor extends AudioWorkletProcessor {
     const rateRatio = (sample.sampleRate / ctxRate) * playbackRate;
     let durationSamples = Math.floor(msg.duration * ctxRate);
     if (isDrum && durationSamples > _DRUM_MAX_SAMPLES) durationSamples = _DRUM_MAX_SAMPLES;
-    const voiceReleaseSamples = isDrum
-      ? Math.floor(Math.min(durationSamples, _DRUM_MAX_SAMPLES))
-      : _RELEASE_SAMPLES;
+
+    // 从 SF2 读取的真实 ADSR（秒 → 样本数）
+    // 鼓组忽略 ADSR，使用原有的指数衰减包络
+    let attackSamples, holdSamples, decaySamples, sustainLevel, releaseSamples;
+    if (isDrum) {
+      // 鼓组使用原有的简单包络：无 attack，整体指数衰减
+      attackSamples = 0;
+      holdSamples = 0;
+      decaySamples = 0;
+      sustainLevel = 0;
+      releaseSamples = Math.floor(Math.min(durationSamples, _DRUM_MAX_SAMPLES));
+    } else {
+      // 旋律乐器：使用 SF2 真实 ADSR
+      // 钳制 attack/hold/release 在合理范围，避免极端值导致点击声或长时间尾音
+      attackSamples = Math.floor(Math.min(2.0, Math.max(0, msg.attackSec || 0)) * ctxRate);
+      holdSamples = Math.floor(Math.min(2.0, Math.max(0, msg.holdSec || 0)) * ctxRate);
+      decaySamples = Math.floor(Math.min(8.0, Math.max(0, msg.decaySec || 0)) * ctxRate);
+      sustainLevel = Math.max(0, Math.min(1, msg.sustainPerc ?? 1));
+      releaseSamples = Math.floor(Math.min(8.0, Math.max(0.02, msg.releaseSec || 0.1)) * ctxRate);
+      // 防御：如果 releaseSamples 太小则用默认值
+      if (releaseSamples < 64) releaseSamples = _RELEASE_SAMPLES_DEFAULT;
+    }
 
     // 从对象池获取 voice 对象（消除 GC）
     let voice = this._voicePool.pop();
@@ -129,10 +154,20 @@ class SF2Processor extends AudioWorkletProcessor {
     voice.fadeout = 0;
     voice.fadeoutGain = 1;
     voice.invDuration = 1 / Math.max(durationSamples, 1);
-    voice.invAttack = 1 / Math.max(_ATTACK_SAMPLES, 1);
-    voice.invRelease = 1 / Math.max(voiceReleaseSamples, 1);
-    voice.attackSamples = _ATTACK_SAMPLES;
-    voice.voiceReleaseSamples = voiceReleaseSamples;
+    voice.invAttack = 1 / Math.max(attackSamples, 1);
+    voice.invDecay = 1 / Math.max(decaySamples, 1);
+    voice.invRelease = 1 / Math.max(releaseSamples, 1);
+    voice.attackSamples = attackSamples;
+    voice.holdSamples = holdSamples;
+    voice.decaySamples = decaySamples;
+    voice.sustainLevel = sustainLevel;
+    voice.voiceReleaseSamples = releaseSamples;
+    // 循环点（相对 PCM 数据的索引）
+    voice.hasLoop = !!msg.hasLoop && !isDrum;
+    voice.loopStart = msg.loopStart || 0;
+    voice.loopEnd = msg.loopEnd || 0;
+    // 用于判断是否已进入 release 阶段
+    voice.inRelease = false;
 
     this.pendingVoices.push(voice);
   }
@@ -226,48 +261,95 @@ class SF2Processor extends AudioWorkletProcessor {
       const isDrum = voice.isDrum;
       const invDuration = voice.invDuration;
       const invAttack = voice.invAttack;
+      const invDecay = voice.invDecay;
       const invRelease = voice.invRelease;
       const attackSamples = voice.attackSamples;
+      const holdSamples = voice.holdSamples;
+      const decaySamples = voice.decaySamples;
+      const sustainLevel = voice.sustainLevel;
       const voiceReleaseSamples = voice.voiceReleaseSamples;
+      const hasLoop = voice.hasLoop;
+      const loopStart = voice.loopStart;
+      const loopEnd = voice.loopEnd;
 
       let position = voice.position;
       let elapsed = voice.elapsedSamples;
       let state = voice.state;
       let fadeout = voice.fadeout;
       let fadeoutGain = voice.fadeoutGain;
+      let inRelease = voice.inRelease;
 
       for (let i = blockStartOffset; i < blockSize; i++) {
         if (state === 'done') break;
+
+        // 循环点处理：当音符持续时间未结束且 position 越过 loopEnd 时，回卷到 loopStart
+        // 这样持续音符（弦乐/铜管）不会过早结束
+        if (!inRelease && hasLoop && position >= loopEnd && loopEnd > loopStart) {
+          position = loopStart + (position - loopEnd);
+        }
+        // 非循环样本走到末尾即结束
         if (position >= srcLen) { state = 'done'; break; }
 
-        // 线性插值（Int16/Float32 通用，peakGain 已含转换因子）
+        // 三次插值（Catmull-Rom）：取前后各 2 个样本，比线性插值更柔和，消除数字失真感
+        // 边界处理：超出范围时 clamp 到首/尾样本
         const idx = position | 0;
         const frac = position - idx;
+        const idxM1 = idx > 0 ? idx - 1 : 0;
+        const idxP1 = idx + 1 < srcLen ? idx + 1 : idx;
+        const idxP2 = idx + 2 < srcLen ? idx + 2 : idxP1;
+        const sM1 = srcData[idxM1];
         const s0 = srcData[idx];
-        const s1 = (idx + 1 < srcLen) ? srcData[idx + 1] : s0;
+        const s1 = srcData[idxP1];
+        const s2 = srcData[idxP2];
+        // Catmull-Rom: 0.5 * [(-sM1 + 3*s0 - 3*s1 + s2), (2*s0 - 2*s1) , (-sM1 + s2)] · [frac², frac, 1]
+        const a = 0.5 * (-sM1 + 3 * s0 - 3 * s1 + s2);
+        const b = 0.5 * (2 * s0 - 2 * s1);
+        const c = 0.5 * (-sM1 + s2);
+        const sampleValue = ((a * frac + b) * frac + c) * frac + s0;
 
         // 包络计算（预计算倒数，乘法替代除法）
         let env;
         if (isDrum) {
+          // 鼓组：指数衰减，无 sustain
           if (elapsed < durationSamples) {
             const inv = 1 - elapsed * invDuration;
             env = peak * inv * inv;
-            if (env < 0.0000001) { env = 0; state = 'done'; }
+            if (env < _ENV_DONE_THRESHOLD) { env = 0; state = 'done'; }
           } else {
             env = 0; state = 'done';
           }
         } else {
-          if (elapsed < attackSamples) {
-            env = elapsed * invAttack * peak;
-          } else if (elapsed < durationSamples) {
-            env = peak;
-          } else if (elapsed < durationSamples + voiceReleaseSamples) {
-            const relT = (elapsed - durationSamples) * invRelease;
-            const inv = 1 - relT;
-            env = peak * inv * inv;
-            if (env < 0.0000001) { env = 0; state = 'done'; }
+          // 旋律乐器：完整 ADSR
+          // 阶段：attack → hold → decay → sustain → release
+          // 进入 release 阶段的判定：elapsed >= durationSamples（音符持续时间结束）
+          if (!inRelease && elapsed >= durationSamples) {
+            inRelease = true;
+            elapsed = 0; // 重新计数 release 已过去的样本
+          }
+
+          if (!inRelease) {
+            // Attack 阶段
+            if (elapsed < attackSamples) {
+              env = elapsed * invAttack * peak;
+            } else if (elapsed < attackSamples + holdSamples) {
+              // Hold 阶段
+              env = peak;
+            } else if (elapsed < attackSamples + holdSamples + decaySamples) {
+              // Decay 阶段：从 peak 衰减到 sustainLevel
+              const decayT = (elapsed - attackSamples - holdSamples) * invDecay;
+              env = peak + (sustainLevel * peak - peak) * decayT;
+            } else {
+              // Sustain 阶段
+              env = sustainLevel * peak;
+            }
           } else {
-            env = 0; state = 'done';
+            // Release 阶段：从当前 sustainLevel 衰减到 0
+            // 起点取 release 进入瞬间的实际增益（避免突跳）
+            // 简化：从 sustainLevel * peak 线性衰减
+            const relT = elapsed * invRelease;
+            const inv = 1 - relT;
+            env = sustainLevel * peak * inv * inv;
+            if (env < _ENV_DONE_THRESHOLD) { env = 0; state = 'done'; }
           }
         }
 
@@ -279,7 +361,7 @@ class SF2Processor extends AudioWorkletProcessor {
           fadeout--;
         }
 
-        const out = (s0 + (s1 - s0) * frac) * env;
+        const out = sampleValue * env;
         // 声道展开
         if (stereo) {
           out0[i] += out;
@@ -297,6 +379,7 @@ class SF2Processor extends AudioWorkletProcessor {
       voice.state = state;
       voice.fadeout = fadeout;
       voice.fadeoutGain = fadeoutGain;
+      voice.inRelease = inRelease;
 
       if (state !== 'done') {
         remaining.push(voice);

@@ -17,9 +17,9 @@ const LOW_END_MIN_POLYPHONY = CPU_CORES <= 2 ? 8 : MIN_POLYPHONY;
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
 // 更大的 lookahead 和更短的 interval 可以减少卡顿
 const BUFFER_PRESETS = {
-  short: [0.15, 20],   // 低延迟模式
-  medium: [0.3, 25],   // 平衡模式
-  long: [0.6, 40],     // 高稳定性模式
+  short: [0.10, 15],   // 低延迟模式（默认）：lookahead 100ms，scheduler 15ms
+  medium: [0.25, 25],  // 平衡模式
+  long: [0.5, 40],     // 高稳定性模式
   ultra: [1.0, 50],    // 极致稳定模式（高内存占用）
 };
 
@@ -62,8 +62,8 @@ export function useAudioEngine() {
   const [metronomeOn, setMetronomeOn] = useState(false);
   const metronomeOnRef = useRef(false);
   const bpmRef = useRef(120);
-  // 低配设备（2核）自动使用更大的缓冲区以减少卡顿
-  const initialBufferPreset = CPU_CORES <= 2 ? 'long' : 'medium';
+  // 低配设备（2核）自动使用更大的缓冲区以减少卡顿，其他设备默认 short 模式以获得更低延迟
+  const initialBufferPreset = CPU_CORES <= 2 ? 'long' : 'short';
   const initialBufferValues = BUFFER_PRESETS[initialBufferPreset];
   const [bufferSize, setBufferSizeState] = useState(initialBufferPreset);
   const bufferSizeRef = useRef(initialBufferPreset);
@@ -90,7 +90,8 @@ export function useAudioEngine() {
 
   const initAudio = useCallback(async () => {
     if (audioCtxRef.current) return audioCtxRef.current;
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // latencyHint: 'interactive'（默认）适合低延迟交互场景，编曲工具优先
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
     audioCtxRef.current = ctx;
 
     const master = ctx.createGain();
@@ -98,12 +99,13 @@ export function useAudioEngine() {
     masterGainRef.current = master;
 
     // 添加动态压缩器防止爆音
+    // 调整：release 从 0.1s 降到 0.05s，让快速连续音符更清晰，避免"糊"
     const compressor = ctx.createDynamicsCompressor();
     compressor.threshold.value = -12; // 阈值 (dB) — 更低阈值捕获更多峰值
     compressor.knee.value = 12; // 拐点范围 — 较硬拐点
     compressor.ratio.value = 20; // 压缩比 — 接近限制器
     compressor.attack.value = 0.001; // 攻击时间 — 1ms 快速响应瞬态
-    compressor.release.value = 0.1; // 释放时间
+    compressor.release.value = 0.05; // 释放时间 — 50ms 更短，避免尾音糊
     compressorRef.current = compressor;
 
     // 示波器分析器节点 - 插入在 compressor 和 destination 之间
@@ -181,7 +183,8 @@ export function useAudioEngine() {
     try {
       // 加版本号查询串强制浏览器加载最新 worklet 代码（worklet 模块会被强缓存，
       // 旧版 harsh soft-clip 代码不更新会导致"音量调到1%仍爆音"问题）
-      const workletUrl = new URL('worklets/sf2-processor.js?v=3', location.href).href;
+      // v4: 三次插值 + SF2 循环点 + 真实 ADSR
+      const workletUrl = new URL('worklets/sf2-processor.js?v=4', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,
@@ -517,6 +520,16 @@ export function useAudioEngine() {
       pitchCorrection: bestSample.pitchCorrection || 0,
       gainScale: trackVol,
       isDrum: !!isDrum,
+      // SF2 循环点（持续音符如弦乐/铜管不会过早结束）
+      hasLoop: !!bestSample.hasLoop,
+      loopStart: bestSample.loopStart || 0,
+      loopEnd: bestSample.loopEnd || 0,
+      // SF2 真实 ADSR（秒，0 表示用默认值）
+      attackSec: bestSample.attackSec || 0,
+      holdSec: bestSample.holdSec || 0,
+      decaySec: bestSample.decaySec || 0,
+      sustainPerc: bestSample.sustainPerc ?? 1,
+      releaseSec: bestSample.releaseSec || 0,
     };
     if (batchBuffer) {
       batchBuffer.push(noteMsg);
