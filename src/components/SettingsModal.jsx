@@ -44,8 +44,9 @@ export default function SettingsPanel({
     return text.toLowerCase().includes(search.toLowerCase());
   };
 
-  const bufsize = (typeof bufferSize === 'number') ? bufferSize : 
-    (bufferSize === 'short' ? 0.08 : bufferSize === 'medium' ? 0.15 : bufferSize === 'ultra' ? 1.0 : 0.3);
+  // 与 useAudioEngine 的 BUFFER_PRESETS 保持一致
+  const bufsize = (typeof bufferSize === 'number') ? bufferSize :
+    (bufferSize === 'short' ? 0.10 : bufferSize === 'medium' ? 0.25 : bufferSize === 'ultra' ? 1.0 : 0.5);
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex' }}>
