@@ -206,7 +206,8 @@ export function useAudioEngine() {
       // v4: 三次插值 + SF2 循环点 + 真实 ADSR
       // v5: 循环回卷用 modulo 防止高音跳跃、软限幅阈值 0.9→0.95
       // v6: 线性插值替代三次（CPU 减半）、WORKLET_POLYPHONY 128→64
-      const workletUrl = new URL('worklets/sf2-processor.js?v=6', location.href).href;
+      // v7: 修复音符断裂 click 声——release 三次方衰减 + 记录进入时增益 + 默认 200ms
+      const workletUrl = new URL('worklets/sf2-processor.js?v=7', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,
@@ -1217,8 +1218,8 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgre
 
     // 直接传输 Int16Array 副本（2字节/样本），worklet 内部用预乘 _INV_32768 转换
     // 相比 Float32Array（4字节/样本）节省 50% worklet 内存，且零额外 CPU 开销
-    // 注意：从 worker 返回的 pcmData 已经是结构化克隆后的新实例，这里 copy 一份再 transfer
-    // 保留原 pcmData 供 audioExport.ts 离线渲染使用
+    // v7: 传输后释放主线程 pcmData（设为 null），让 GC 回收，降低内存占用
+    // audioExport.ts 有合成器 fallback，pcmData 为 null 时自动用合成器渲染
     const int16Copy = new Int16Array(pcmData);
 
     workletNode.port.postMessage({
@@ -1229,8 +1230,9 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgre
       isInt16: true,
     }, [int16Copy.buffer]);
 
-    // 在所有共享此 pcmData 的 sampleObj 上记录 workletSampleId
+    // 传输完成后释放主线程 pcmData（降低内存：100MB SF2 不再占用 800MB）
     for (let k = 0; k < entry.sampleObjs.length; k++) {
+      entry.sampleObjs[k].pcmData = null;
       entry.sampleObjs[k].workletSampleId = entry.id;
     }
 

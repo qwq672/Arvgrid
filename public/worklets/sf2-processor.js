@@ -9,7 +9,7 @@
 // - 保留循环点 + 真实 ADSR 支持
 
 const _ATTACK_SAMPLES_DEFAULT = Math.floor(0.020 * sampleRate);
-const _RELEASE_SAMPLES_DEFAULT = Math.floor(0.080 * sampleRate);
+const _RELEASE_SAMPLES_DEFAULT = Math.floor(0.200 * sampleRate);  // v7: 80ms → 200ms，消除 click 声
 const _DRUM_MAX_SAMPLES = Math.floor(0.5 * sampleRate);
 const _INV_32768 = 1 / 32768;
 const _ENV_DONE_THRESHOLD = 0.0000001;
@@ -117,14 +117,15 @@ class SF2Processor extends AudioWorkletProcessor {
       releaseSamples = Math.floor(Math.min(durationSamples, _DRUM_MAX_SAMPLES));
     } else {
       // 旋律乐器：使用 SF2 真实 ADSR
-      // 钳制 attack/hold/release 在合理范围，避免极端值导致点击声或长时间尾音
+      // 钳制 attack/hold/release 在合理范围
+      // v7: release 最小值提高到 0.1s，避免短 release 导致 click 声
       attackSamples = Math.floor(Math.min(2.0, Math.max(0, msg.attackSec || 0)) * ctxRate);
       holdSamples = Math.floor(Math.min(2.0, Math.max(0, msg.holdSec || 0)) * ctxRate);
       decaySamples = Math.floor(Math.min(8.0, Math.max(0, msg.decaySec || 0)) * ctxRate);
       sustainLevel = Math.max(0, Math.min(1, msg.sustainPerc ?? 1));
-      releaseSamples = Math.floor(Math.min(8.0, Math.max(0.02, msg.releaseSec || 0.1)) * ctxRate);
-      // 防御：如果 releaseSamples 太小则用默认值
-      if (releaseSamples < 64) releaseSamples = _RELEASE_SAMPLES_DEFAULT;
+      releaseSamples = Math.floor(Math.min(8.0, Math.max(0.1, msg.releaseSec || 0.2)) * ctxRate);
+      // 防御：如果 releaseSamples 太小则用默认值（200ms）
+      if (releaseSamples < _RELEASE_SAMPLES_DEFAULT) releaseSamples = _RELEASE_SAMPLES_DEFAULT;
     }
 
     // 从对象池获取 voice 对象（消除 GC）
@@ -146,6 +147,10 @@ class SF2Processor extends AudioWorkletProcessor {
     voice.invDuration = 1 / Math.max(durationSamples, 1);
     voice.invAttack = 1 / Math.max(attackSamples, 1);
     voice.invDecay = 1 / Math.max(decaySamples, 1);
+    // v7: LFO 颤音参数（sustain 阶段微小音量调制，增加生命力）
+    // 5Hz 颤音，深度 3%（非常微妙，模拟自然演奏）
+    voice.lfoPhase = 0;
+    voice.lfoIncr = (2 * Math.PI * 5) / ctxRate;  // 5Hz
     voice.invRelease = 1 / Math.max(releaseSamples, 1);
     voice.attackSamples = attackSamples;
     voice.holdSamples = holdSamples;
@@ -158,6 +163,7 @@ class SF2Processor extends AudioWorkletProcessor {
     voice.loopEnd = msg.loopEnd || 0;
     // 用于判断是否已进入 release 阶段
     voice.inRelease = false;
+    voice.releaseStartGain = 0;  // 进入 release 时的实际增益（避免突跳）
 
     this.pendingVoices.push(voice);
   }
@@ -268,6 +274,9 @@ class SF2Processor extends AudioWorkletProcessor {
       let fadeout = voice.fadeout;
       let fadeoutGain = voice.fadeoutGain;
       let inRelease = voice.inRelease;
+      let releaseStartGain = voice.releaseStartGain;
+      let lfoPhase = voice.lfoPhase;
+      const lfoIncr = voice.lfoIncr;
 
       for (let i = blockStartOffset; i < blockSize; i++) {
         if (state === 'done') break;
@@ -301,11 +310,22 @@ class SF2Processor extends AudioWorkletProcessor {
           }
         } else {
           // 旋律乐器：完整 ADSR
-          // 阶段：attack → hold → decay → sustain → release
-          // 进入 release 阶段的判定：elapsed >= durationSamples（音符持续时间结束）
+          // 进入 release 阶段的判定：elapsed >= durationSamples
           if (!inRelease && elapsed >= durationSamples) {
             inRelease = true;
-            elapsed = 0; // 重新计数 release 已过去的样本
+            // 记录进入 release 时的实际增益（避免从 sustainLevel 硬跳）
+            // 如果音符在 attack/decay 阶段就结束，release 从当前增益开始而非 sustainLevel
+            if (elapsed < attackSamples) {
+              releaseStartGain = elapsed * invAttack * peak;
+            } else if (elapsed < attackSamples + holdSamples) {
+              releaseStartGain = peak;
+            } else if (elapsed < attackSamples + holdSamples + decaySamples) {
+              const decayT = (elapsed - attackSamples - holdSamples) * invDecay;
+              releaseStartGain = peak + (sustainLevel * peak - peak) * decayT;
+            } else {
+              releaseStartGain = sustainLevel * peak;
+            }
+            elapsed = 0;
           }
 
           if (!inRelease) {
@@ -313,24 +333,27 @@ class SF2Processor extends AudioWorkletProcessor {
             if (elapsed < attackSamples) {
               env = elapsed * invAttack * peak;
             } else if (elapsed < attackSamples + holdSamples) {
-              // Hold 阶段
               env = peak;
             } else if (elapsed < attackSamples + holdSamples + decaySamples) {
-              // Decay 阶段：从 peak 衰减到 sustainLevel
               const decayT = (elapsed - attackSamples - holdSamples) * invDecay;
               env = peak + (sustainLevel * peak - peak) * decayT;
             } else {
-              // Sustain 阶段
-              env = sustainLevel * peak;
+              // Sustain 阶段：加 LFO 颤音（3% 深度，5Hz）
+              // 增加生命力，消除"机械感"
+              const lfo = 1 + 0.03 * Math.sin(lfoPhase);
+              env = sustainLevel * peak * lfo;
             }
           } else {
-            // Release 阶段：从当前 sustainLevel 衰减到 0
-            // 起点取 release 进入瞬间的实际增益（避免突跳）
-            // 简化：从 sustainLevel * peak 线性衰减
+            // Release 阶段：从进入时的实际增益平滑衰减到 0
+            // 用三次曲线 (1-t)^3 而非线性，结尾更平滑，消除 click 声
             const relT = elapsed * invRelease;
-            const inv = 1 - relT;
-            env = sustainLevel * peak * inv * inv;
-            if (env < _ENV_DONE_THRESHOLD) { env = 0; state = 'done'; }
+            if (relT >= 1) {
+              env = 0; state = 'done';
+            } else {
+              const inv = 1 - relT;
+              env = releaseStartGain * inv * inv * inv;  // 三次方衰减，更平滑
+              if (env < _ENV_DONE_THRESHOLD) { env = 0; state = 'done'; }
+            }
           }
         }
 
@@ -353,6 +376,7 @@ class SF2Processor extends AudioWorkletProcessor {
 
         position += rateRatio;
         elapsed++;
+        lfoPhase += lfoIncr;
       }
 
       voice.position = position;
@@ -361,6 +385,8 @@ class SF2Processor extends AudioWorkletProcessor {
       voice.fadeout = fadeout;
       voice.fadeoutGain = fadeoutGain;
       voice.inRelease = inRelease;
+      voice.releaseStartGain = releaseStartGain;
+      voice.lfoPhase = lfoPhase;
 
       if (state !== 'done') {
         remaining.push(voice);
