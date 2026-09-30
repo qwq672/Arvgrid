@@ -1,0 +1,115 @@
+name: Audio Core
+
+# 构建 Rust 音频核心（WASM + 原生）
+# 触发条件：audio-core/ 目录变更时
+# 不影响网页端 deploy.yml（那个仍然每次 push main 都跑）
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'audio-core/**'
+      - '.github/workflows/audio-core.yml'
+  pull_request:
+    paths:
+      - 'audio-core/**'
+      - '.github/workflows/audio-core.yml'
+  workflow_dispatch:  # 支持手动触发
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            audio-core/target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('audio-core/Cargo.toml') }}
+      - name: Run tests
+        working-directory: audio-core
+        run: cargo test --lib
+
+  build-wasm:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            audio-core/target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('audio-core/Cargo.toml') }}
+      - name: Build WASM package
+        working-directory: audio-core
+        run: wasm-pack build --target web --features wasm
+      - name: Verify output
+        run: |
+          ls -la audio-core/pkg/
+          test -f audio-core/pkg/audio_core.js
+          test -f audio-core/pkg/audio_core_bg.wasm
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-core-wasm
+          path: audio-core/pkg/
+          retention-days: 30
+
+  build-native:
+    name: Build Native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: libaudio_core.so
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: audio_core.dll
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: libaudio_core.dylib
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            audio-core/target
+          key: ${{ runner.os }}-cargo-native-${{ matrix.target }}-${{ hashFiles('audio-core/Cargo.toml') }}
+      - name: Build native library
+        working-directory: audio-core
+        run: cargo build --lib --release --features native --target ${{ matrix.target }}
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-core-native-${{ matrix.target }}
+          path: audio-core/target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          retention-days: 30

@@ -1,0 +1,6 @@
+# Rust 构建产物
+target/
+pkg/
+
+# WASM 构建产物
+*.wasm.tmp
