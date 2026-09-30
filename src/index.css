@@ -306,6 +306,8 @@ input[type="radio"] { accent-color: var(--text-muted); }
   .modal-content { min-width: 0; width: 95vw; }
   /* 窄屏隐藏示波器，给菜单项让位 */
   .osc-container { display: none !important; }
+  /* 窄屏隐藏 Transport 效果器组（reverb/delay），减少 Transport 高度 */
+  .controls-bar > div:last-child { display: none !important; }
 }
 
 /* 大屏桌面 + 触屏（Surface/触屏笔记本）：不强制 44px 触摸尺寸 */
