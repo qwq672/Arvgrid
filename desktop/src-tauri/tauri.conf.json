@@ -4,9 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.arvgrid.desktop",
   "build": {
-    "frontendDist": "../../dist",
-    "beforeDevCommand": "cd ../.. && npm run dev",
-    "beforeBuildCommand": "cd ../.. && npm run build"
+    "frontendDist": "../../dist"
   },
   "app": {
     "windows": [
