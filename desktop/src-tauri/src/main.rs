@@ -1,25 +1,19 @@
-// Tauri 桌面端 Rust 后端
+// Tauri 桌面端 Rust 后端（最小可行版本）
 //
-// 集成 audio-core（Rust 原生音频核心），通过 Tauri command 暴露给前端
-//
-// 性能优势（相比网页端）：
-// - 多线程混音（rayon）
-// - SIMD 向量化（自动）
-// - 直连系统音频（cpal，<10ms 延迟）
-// - 无浏览器开销
+// 当前阶段：起头，先让 Tauri 壳能编译运行
+// 后续阶段：集成 audio-core + cpal 音频输出
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
 
-use audio_core::AudioCore;
-use std::sync::{Arc, Mutex};
 use tauri::State;
+use std::sync::Mutex;
 
-/// 共享音频核心状态
+/// 共享音频核心状态（后续集成 audio-core 时填充）
 struct AudioState {
-    core: Mutex<Option<AudioCore>>,
+    sf2_loaded: Mutex<bool>,
 }
 
 #[tauri::command]
@@ -27,59 +21,33 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! Arvgrid Desktop is running.", name)
 }
 
-/// 加载 SF2 音色库
-/// 与网页端共享同一个 audio-core 实现
+/// 加载 SF2 音色库（占位实现，后续集成 audio-core）
 #[tauri::command]
-async fn load_sf2(
-    sf2_bytes: Vec<u8>,
-    state: State<'_, AudioState>,
-) -> Result<String, String> {
-    // 桌面端：sample_rate 48000，复音数 256（远超网页端 64）
-    let core = AudioCore::with_soundfont(&sf2_bytes, 48000, 256)?;
-    *state.core.lock().map_err(|e| e.to_string())? = Some(core);
-    Ok("SF2 loaded successfully".to_string())
+async fn load_sf2(state: State<'_, AudioState>) -> Result<String, String> {
+    *state.sf2_loaded.lock().map_err(|e| e.to_string())? = true;
+    Ok("SF2 loaded (placeholder, audio-core integration pending)".to_string())
 }
 
-/// 触发音符
+/// 触发音符（占位实现）
 #[tauri::command]
-fn note_on(
-    channel: i32,
-    key: i32,
-    velocity: i32,
-    state: State<'_, AudioState>,
-) -> Result<(), String> {
-    let guard = state.core.lock().map_err(|e| e.to_string())?;
-    if let Some(core) = guard.as_ref() {
-        core.note_on(channel, key, velocity);
-    }
+fn note_on(channel: i32, key: i32, velocity: i32) -> Result<(), String> {
+    // TODO: 集成 audio-core 后实现
     Ok(())
 }
 
-/// 释放音符
+/// 释放音符（占位实现）
 #[tauri::command]
-fn note_off(
-    channel: i32,
-    key: i32,
-    state: State<'_, AudioState>,
-) -> Result<(), String> {
-    let guard = state.core.lock().map_err(|e| e.to_string())?;
-    if let Some(core) = guard.as_ref() {
-        core.note_off(channel, key);
-    }
+fn note_off(channel: i32, key: i32) -> Result<(), String> {
+    // TODO: 集成 audio-core 后实现
     Ok(())
 }
 
 /// 获取音频核心信息
 #[tauri::command]
 fn audio_info(state: State<'_, AudioState>) -> Result<String, String> {
-    let guard = state.core.lock().map_err(|e| e.to_string())?;
-    if let Some(core) = guard.as_ref() {
-        Ok(format!(
-            "sample_rate={}, block_size={}, max_polyphony={}",
-            core.sample_rate(),
-            core.block_size(),
-            core.max_polyphony()
-        ))
+    let loaded = *state.sf2_loaded.lock().map_err(|e| e.to_string())?;
+    if loaded {
+        Ok("Audio core: native (placeholder), polyphony=256".to_string())
     } else {
         Ok("No audio core loaded".to_string())
     }
@@ -88,7 +56,7 @@ fn audio_info(state: State<'_, AudioState>) -> Result<String, String> {
 fn main() {
     tauri::Builder::default()
         .manage(AudioState {
-            core: Mutex::new(None),
+            sf2_loaded: Mutex::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             greet,

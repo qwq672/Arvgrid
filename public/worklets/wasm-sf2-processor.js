@@ -98,23 +98,32 @@ async function ensureWasmLoaded() {
   if (_wasmReady) return;
   if (_initPromise) return _initPromise;
   _initPromise = (async () => {
+    console.log('[wasm-worklet] ensureWasmLoaded: start');
     // 动态 import：在 polyfill 之后执行
+    console.log('[wasm-worklet] importing audio_core.js...');
     const mod = await import('../wasm/audio_core.js');
     _init = mod.default;
     _AudioCoreWasm = mod.AudioCoreWasm;
+    console.log('[wasm-worklet] audio_core.js imported, AudioCoreWasm=', typeof _AudioCoreWasm);
 
     // 直接 fetch WASM 文件为 ArrayBuffer，绕过 init 内部的 URL/fetch 处理
-    // 这样避免 AudioWorklet 里 fetch 行为不一致的问题
+    console.log('[wasm-worklet] fetching wasm file...');
     const wasmUrl = new URL('../wasm/audio_core_bg.wasm', location.href);
+    console.log('[wasm-worklet] wasm url:', wasmUrl.href);
     const response = await fetch(wasmUrl);
     if (!response.ok) {
       throw new Error(`Failed to fetch WASM: ${response.status} ${response.statusText}`);
     }
     const wasmBytes = await response.arrayBuffer();
+    console.log('[wasm-worklet] wasm bytes loaded:', wasmBytes.byteLength);
+
     // 传 ArrayBuffer 给 init，跳过 URL 处理分支
-    await init(wasmBytes);
+    console.log('[wasm-worklet] initializing wasm...');
+    await _init(wasmBytes);
+    console.log('[wasm-worklet] wasm initialized');
 
     _wasmReady = true;
+    console.log('[wasm-worklet] ensureWasmLoaded: done');
   })();
   return _initPromise;
 }
@@ -133,18 +142,27 @@ class WasmSf2Processor extends AudioWorkletProcessor {
       switch (msg.type) {
         case 'load-sf2': {
           try {
+            console.log('[wasm-worklet] load-sf2 received, data size:', msg.data?.byteLength || msg.data?.length);
             await ensureWasmLoaded();
+            console.log('[wasm-worklet] wasm ready, creating AudioCoreWasm...');
             // 创建 AudioCoreWasm 实例
+            const sf2Bytes = msg.data instanceof ArrayBuffer
+              ? new Uint8Array(msg.data)
+              : new Uint8Array(msg.data);
+            console.log('[wasm-worklet] sf2 bytes length:', sf2Bytes.length);
             this.audioCore = new _AudioCoreWasm(
-              new Uint8Array(msg.data),
+              sf2Bytes,
               this.sampleRate,
               64
             );
+            console.log('[wasm-worklet] AudioCoreWasm created, block_size=', this.audioCore.block_size());
             this._blockSize = this.audioCore.block_size();
             this._leftBuf = new Float32Array(this._blockSize);
             this._rightBuf = new Float32Array(this._blockSize);
+            console.log('[wasm-worklet] posting load-success');
             this.port.postMessage({ type: 'load-success' });
           } catch (err) {
+            console.error('[wasm-worklet] load-sf2 error:', err);
             this.port.postMessage({
               type: 'load-error',
               message: err?.message || String(err),
