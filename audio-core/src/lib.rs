@@ -128,3 +128,8 @@ mod tests {
 // WASM 绑定（仅 wasm32 target 编译）
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+
+// 音频后端抽象 trait（为未来扩展铺路）
+mod backend;
+
+pub use backend::{AudioBackend, RustySynthBackend};
