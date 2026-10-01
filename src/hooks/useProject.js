@@ -63,7 +63,7 @@ export function clearAllRecentProjects() {
 
 export function useProject() {
   const [tracks, setTracks] = useState([
-    { id: generateId(), name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0 }
+    { id: generateId(), name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0, effects: { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 } }
   ]);
   const [currentTrackId, setCurrentTrackId] = useState(tracks[0].id);
   const [bpm, setBpm] = useState(120);
@@ -102,7 +102,7 @@ export function useProject() {
   const addTrack = useCallback(() => {
     pushUndo();
     const newId = generateId();
-    setTracks(prev => [...prev, { id: newId, name: `Track ${prev.length+1}`, program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0 }]);
+    setTracks(prev => [...prev, { id: newId, name: `Track ${prev.length+1}`, program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0, effects: { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 } }]);
     setCurrentTrackId(newId);
   }, [pushUndo]);
 
@@ -184,6 +184,7 @@ export function useProject() {
         comment: original.comment || '',
         group: original.group || '',
         reverb: original.reverb || 0,
+        effects: original.effects || { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 },
         color: original.color,
       };
       const newTracks = [...prev];

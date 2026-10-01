@@ -53,6 +53,12 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2.0"
 
+      - name: Download built-in SF2 (FluidR3_GM)
+        shell: bash
+        run: |
+          chmod +x desktop/scripts/download-sf2.sh
+          desktop/scripts/download-sf2.sh
+
       - name: Build frontend
         run: |
           npm install
