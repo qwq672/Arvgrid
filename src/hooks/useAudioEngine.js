@@ -29,12 +29,13 @@ const IS_MOBILE = (typeof navigator !== 'undefined' && typeof window !== 'undefi
 );
 
 // 缓冲区预设: [lookahead秒, schedulerIntervalMs]
-// v6: 移动设备 medium 提高到 33ms（约 30fps），减少主线程 scheduler 频率
+// v9: 进一步降低 scheduler 频率，减少主线程占用
+// lookahead 加大让更多音符提前调度，scheduler 间隔放宽
 const BUFFER_PRESETS = {
-  short: [0.10, 15],   // 低延迟模式：lookahead 100ms，scheduler 15ms
-  medium: [0.30, 33],  // 平衡模式（移动设备默认）：33ms 减少主线程占用
-  long: [0.5, 40],     // 高稳定性模式
-  ultra: [1.0, 50],    // 极致稳定模式（高内存占用）
+  short: [0.15, 25],   // 低延迟模式：lookahead 150ms，scheduler 25ms
+  medium: [0.40, 50],  // 平衡模式（移动设备默认）：50ms 减少主线程占用
+  long: [0.6, 60],     // 高稳定性模式
+  ultra: [1.0, 80],    // 极致稳定模式（高内存占用）
 };
 
 export function useAudioEngine() {
@@ -230,7 +231,7 @@ export function useAudioEngine() {
     // v8: 根据 WASM_ENABLED 选择 JS worklet 或 WASM worklet
     if (WASM_ENABLED && isWasmSupported()) {
       try {
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=4', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=5', location.href).href;
         await ctx.audioWorklet.addModule(workletUrl);
         const workletNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
           numberOfInputs: 0,
@@ -242,6 +243,33 @@ export function useAudioEngine() {
         workletReadyRef.current = true;
         workletBackendRef.current = 'wasm';
         console.log('[arvgrid] WASM SF2 worklet loaded');
+
+        // 预加载 WASM 字节：主线程 fetch 后传给 worklet
+        // 避免 AudioWorklet 里 fetch 行为不一致导致超时
+        workletNode.port.addEventListener('message', async (e) => {
+          if (e.data?.type === 'request-wasm-bytes') {
+            try {
+              console.log('[arvgrid] worklet requested wasm bytes, fetching...');
+              const wasmUrl = new URL('wasm/audio_core_bg.wasm', location.href);
+              const resp = await fetch(wasmUrl);
+              if (!resp.ok) {
+                throw new Error(`Failed to fetch wasm: ${resp.status}`);
+              }
+              const wasmBytes = await resp.arrayBuffer();
+              console.log('[arvgrid] sending wasm bytes to worklet:', wasmBytes.byteLength);
+              workletNode.port.postMessage({
+                type: 'init-wasm-bytes',
+                wasmBytes,
+              }, [wasmBytes]);
+            } catch (err) {
+              console.error('[arvgrid] failed to fetch wasm bytes for worklet:', err);
+              workletNode.port.postMessage({
+                type: 'init-wasm-bytes',
+                error: err.message,
+              });
+            }
+          }
+        });
       } catch (err) {
         console.warn('[arvgrid] WASM worklet failed, fallback to JS worklet:', err);
         await loadJsWorkletImpl(ctx, noteBus);

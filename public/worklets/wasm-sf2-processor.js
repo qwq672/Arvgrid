@@ -89,43 +89,59 @@ if (typeof console === 'undefined') {
 }
 
 // ============ 加载 audio-core WASM ============
-// 用动态 import 确保 polyfill 先执行
+// 主线程 fetch wasm 字节后通过 postMessage 传给 worklet
+// 避免 AudioWorklet 里 fetch 行为不一致的问题
 let _init, _AudioCoreWasm;
 let _wasmReady = false;
-let _initPromise = null;
+let _wasmResolve = null;
+let _wasmReject = null;
+let _wasmPromise = null;
 
-async function ensureWasmLoaded() {
-  if (_wasmReady) return;
-  if (_initPromise) return _initPromise;
-  _initPromise = (async () => {
-    console.log('[wasm-worklet] ensureWasmLoaded: start');
-    // 动态 import：在 polyfill 之后执行
+function ensureWasmLoaded() {
+  if (_wasmReady) return Promise.resolve();
+  if (_wasmPromise) return _wasmPromise;
+  _wasmPromise = new Promise((resolve, reject) => {
+    _wasmResolve = resolve;
+    _wasmReject = reject;
+    // 通知主线程发 wasm 字节过来
+    self.postMessage({ type: 'request-wasm-bytes' });
+  });
+  return _wasmPromise;
+}
+
+// 主线程发来 wasm 模块代码（audio_core.js 的 import 结果）和 wasm 字节
+async function initWasmFromMain(wasmJsCode, wasmBytes) {
+  // 如果主线程报错（fetch 失败）
+  if (!wasmBytes) {
+    const err = new Error('No wasm bytes received from main thread');
+    console.error('[wasm-worklet] initWasmFromMain error:', err);
+    if (_wasmReject) _wasmReject(err);
+    return;
+  }
+  try {
+    console.log('[wasm-worklet] initWasmFromMain: start');
+    // 用动态 import 加载 audio_core.js（不能用 eval，CSP 会拦）
     console.log('[wasm-worklet] importing audio_core.js...');
     const mod = await import('../wasm/audio_core.js');
     _init = mod.default;
     _AudioCoreWasm = mod.AudioCoreWasm;
-    console.log('[wasm-worklet] audio_core.js imported, AudioCoreWasm=', typeof _AudioCoreWasm);
+    console.log('[wasm-worklet] audio_core.js imported, AudioCoreWasm type:', typeof _AudioCoreWasm);
 
-    // 直接 fetch WASM 文件为 ArrayBuffer，绕过 init 内部的 URL/fetch 处理
-    console.log('[wasm-worklet] fetching wasm file...');
-    const wasmUrl = new URL('../wasm/audio_core_bg.wasm', location.href);
-    console.log('[wasm-worklet] wasm url:', wasmUrl.href);
-    const response = await fetch(wasmUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch WASM: ${response.status} ${response.statusText}`);
+    if (typeof _init !== 'function') {
+      throw new Error(`audio_core.js default export is not a function (got ${typeof _init})`);
     }
-    const wasmBytes = await response.arrayBuffer();
-    console.log('[wasm-worklet] wasm bytes loaded:', wasmBytes.byteLength);
 
-    // 传 ArrayBuffer 给 init，跳过 URL 处理分支
-    console.log('[wasm-worklet] initializing wasm...');
+    console.log('[wasm-worklet] initializing wasm with', wasmBytes.byteLength, 'bytes...');
     await _init(wasmBytes);
     console.log('[wasm-worklet] wasm initialized');
 
     _wasmReady = true;
-    console.log('[wasm-worklet] ensureWasmLoaded: done');
-  })();
-  return _initPromise;
+    console.log('[wasm-worklet] initWasmFromMain: done');
+    if (_wasmResolve) _wasmResolve();
+  } catch (err) {
+    console.error('[wasm-worklet] initWasmFromMain error:', err);
+    if (_wasmReject) _wasmReject(err);
+  }
 }
 
 class WasmSf2Processor extends AudioWorkletProcessor {
@@ -140,6 +156,11 @@ class WasmSf2Processor extends AudioWorkletProcessor {
     this.port.onmessage = async (e) => {
       const msg = e.data;
       switch (msg.type) {
+        case 'init-wasm-bytes': {
+          // 主线程发来 wasm 字节，初始化 WASM 模块
+          await initWasmFromMain(null, msg.wasmBytes);
+          break;
+        }
         case 'load-sf2': {
           try {
             console.log('[wasm-worklet] load-sf2 received, data size:', msg.data?.byteLength || msg.data?.length);

@@ -66,12 +66,13 @@ export default function SettingsPanel({
     (bufferSize === 'short' ? 0.10 : bufferSize === 'medium' ? 0.25 : bufferSize === 'ultra' ? 1.0 : 0.5);
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex' }}>
-      <div style={{ flex: 1, background: 'rgba(0,0,0,0.5)' }} onClick={onClose} />
+    <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)' }} onClick={onClose} />
       <div style={{
-        width: 320, maxWidth: '90vw', height: '100%', background: 'var(--panel)',
-        borderLeft: '1px solid var(--border)', display: 'flex', flexDirection: 'column',
-        boxShadow: '-4px 0 20px rgba(0,0,0,0.5)', overflow: 'hidden',
+        position: 'relative',
+        width: 'min(480px, 90vw)', maxHeight: '85vh', background: 'var(--panel)',
+        borderRadius: 12, border: '1px solid var(--border)', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.5)', overflow: 'hidden',
       }}>
         {/* 头部 */}
         <div style={{ display: 'flex', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>

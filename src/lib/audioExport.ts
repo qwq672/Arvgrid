@@ -286,14 +286,16 @@ export async function renderAudioBuffer(
 
   // 渲染音频
   // 注意：startRendering 是同步阻塞调用，但返回 Promise
-  // 如果音符数过多或 release 时间过长，可能耗时很长（不会真正卡死，只是慢）
-  // 加 30 秒超时保护，避免用户无限制等待
+  // 如果音符数过多或 release 时间过长，可能耗时较长
+  // 加 120 秒超时保护（比 30s 更宽松，避免大曲子误判超时）
+  console.log(`[export] startRendering: ${totalSamples} samples, ${totalDuration.toFixed(1)}s duration`);
+  const renderStart = performance.now();
   let renderedBuffer: AudioBuffer;
   try {
     renderedBuffer = await Promise.race([
       offlineCtx.startRendering(),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('渲染超时（30s），可能音符数过多或 SF2 数据异常')), 30000)
+        setTimeout(() => reject(new Error(`渲染超时（120s），音符数=${totalEvents}，时长=${totalDuration.toFixed(1)}s`)), 120000)
       ),
     ]);
   } catch (err) {
@@ -301,6 +303,7 @@ export async function renderAudioBuffer(
     try { (offlineCtx as any).close?.(); } catch {}
     throw err;
   }
+  console.log(`[export] startRendering done in ${((performance.now() - renderStart) / 1000).toFixed(1)}s`);
 
   return renderedBuffer;
 }
