@@ -5,12 +5,92 @@
 // - rustysynth 专业级音质
 // - 自动 SIMD 向量化
 //
-// 加载方式：
-//   const url = new URL('worklets/wasm-sf2-processor.js', location.href).href;
-//   await ctx.audioWorklet.addModule(url);
+// ⚠️ AudioWorkletGlobalScope 缺少 TextDecoder/TextEncoder，
+//    wasm-bindgen 生成的 JS 依赖它们，需要 polyfill
 
-import init, { AudioCoreWasm } from '../wasm/audio_core.js';
+// ============ Polyfill: TextDecoder / TextEncoder ============
+// AudioWorklet 全局作用域不提供这两个类，wasm-bindgen 需要
+if (typeof TextDecoder === 'undefined') {
+  class TextDecoderPolyfill {
+    constructor(encoding = 'utf-8', options = {}) {
+      this.encoding = encoding.toLowerCase();
+      this.fatal = options.fatal || false;
+      this.ignoreBOM = options.ignoreBOM || false;
+    }
+    decode(bytes) {
+      if (bytes == null) return '';
+      // 支持 ArrayBuffer, TypedArray, DataView
+      let arr;
+      if (bytes instanceof ArrayBuffer) arr = new Uint8Array(bytes);
+      else if (ArrayBuffer.isView(bytes)) arr = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      else if (bytes instanceof DataView) arr = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      else { if (this.fatal) throw new TypeError('Invalid input'); return ''; }
+      // UTF-8 解码
+      let str = '';
+      for (let i = 0; i < arr.length; ) {
+        const b0 = arr[i++];
+        if (b0 < 0x80) {
+          str += String.fromCharCode(b0);
+        } else if (b0 < 0xC0) {
+          // continuation byte without leading byte — skip
+          if (this.fatal) throw new TypeError('Invalid UTF-8');
+        } else if (b0 < 0xE0) {
+          const b1 = arr[i++] || 0;
+          str += String.fromCharCode(((b0 & 0x1F) << 6) | (b1 & 0x3F));
+        } else if (b0 < 0xF0) {
+          const b1 = arr[i++] || 0;
+          const b2 = arr[i++] || 0;
+          str += String.fromCharCode(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F));
+        } else {
+          const b1 = arr[i++] || 0;
+          const b2 = arr[i++] || 0;
+          const b3 = arr[i++] || 0;
+          const cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+          // 转成 UTF-16 surrogate pair
+          const adj = cp - 0x10000;
+          str += String.fromCharCode(0xD800 + (adj >> 10), 0xDC00 + (adj & 0x3FF));
+        }
+      }
+      return str;
+    }
+  }
+  globalThis.TextDecoder = TextDecoderPolyfill;
+}
+if (typeof TextEncoder === 'undefined') {
+  class TextEncoderPolyfill {
+    constructor() { this.encoding = 'utf-8'; }
+    encode(str) {
+      if (str == null) return new Uint8Array(0);
+      // UTF-8 编码
+      const bytes = [];
+      for (let i = 0; i < str.length; i++) {
+        let cp = str.charCodeAt(i);
+        // 处理 surrogate pair
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < str.length) {
+          const cp2 = str.charCodeAt(i + 1);
+          if (cp2 >= 0xDC00 && cp2 <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (cp2 - 0xDC00);
+            i++;
+          }
+        }
+        if (cp < 0x80) bytes.push(cp);
+        else if (cp < 0x800) bytes.push(0xC0 | (cp >> 6), 0x80 | (cp & 0x3F));
+        else if (cp < 0x10000) bytes.push(0xE0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+        else bytes.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+      }
+      return new Uint8Array(bytes);
+    }
+  }
+  globalThis.TextEncoder = TextEncoderPolyfill;
+}
+// console.log/error 在 AudioWorkletGlobalScope 里通常可用，但保险起见
+if (typeof console === 'undefined') {
+  globalThis.console = { log() {}, error() {}, warn() {} };
+}
 
+// ============ 加载 audio-core WASM ============
+// 用动态 import 确保 polyfill 先执行
+let _init, _AudioCoreWasm;
 let _wasmReady = false;
 let _initPromise = null;
 
@@ -18,9 +98,22 @@ async function ensureWasmLoaded() {
   if (_wasmReady) return;
   if (_initPromise) return _initPromise;
   _initPromise = (async () => {
-    // wasm-bindgen 的 init 函数会加载 .wasm 文件
-    // 路径相对于当前 worklet 模块
-    await init(new URL('../wasm/audio_core_bg.wasm', location.href));
+    // 动态 import：在 polyfill 之后执行
+    const mod = await import('../wasm/audio_core.js');
+    _init = mod.default;
+    _AudioCoreWasm = mod.AudioCoreWasm;
+
+    // 直接 fetch WASM 文件为 ArrayBuffer，绕过 init 内部的 URL/fetch 处理
+    // 这样避免 AudioWorklet 里 fetch 行为不一致的问题
+    const wasmUrl = new URL('../wasm/audio_core_bg.wasm', location.href);
+    const response = await fetch(wasmUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch WASM: ${response.status} ${response.statusText}`);
+    }
+    const wasmBytes = await response.arrayBuffer();
+    // 传 ArrayBuffer 给 init，跳过 URL 处理分支
+    await init(wasmBytes);
+
     _wasmReady = true;
   })();
   return _initPromise;
@@ -42,8 +135,7 @@ class WasmSf2Processor extends AudioWorkletProcessor {
           try {
             await ensureWasmLoaded();
             // 创建 AudioCoreWasm 实例
-            // max_polyphony: 64（网页端平衡值）
-            this.audioCore = new AudioCoreWasm(
+            this.audioCore = new _AudioCoreWasm(
               new Uint8Array(msg.data),
               this.sampleRate,
               64
@@ -100,7 +192,6 @@ class WasmSf2Processor extends AudioWorkletProcessor {
     const blockSize = output[0].length;
 
     // rustysynth 要求按内部 block_size 渲染
-    // 如果输出块大于内部 block，分块渲染
     const internalBlock = this._blockSize || blockSize;
     const out0 = output[0];
     const out1 = numChannels >= 2 ? output[1] : out0;
@@ -110,7 +201,6 @@ class WasmSf2Processor extends AudioWorkletProcessor {
       const remaining = blockSize - rendered;
       const chunk = Math.min(remaining, internalBlock);
 
-      // 用内部 buffer 渲染（避免每次分配）
       if (this._leftBuf.length !== chunk) {
         this._leftBuf = new Float32Array(chunk);
         this._rightBuf = new Float32Array(chunk);
@@ -119,12 +209,10 @@ class WasmSf2Processor extends AudioWorkletProcessor {
       try {
         this.audioCore.render(this._leftBuf, this._rightBuf);
       } catch (e) {
-        // 渲染失败，输出静音
         this._leftBuf.fill(0);
         this._rightBuf.fill(0);
       }
 
-      // 复制到输出
       for (let i = 0; i < chunk; i++) {
         out0[rendered + i] = this._leftBuf[i];
         if (numChannels >= 2) {

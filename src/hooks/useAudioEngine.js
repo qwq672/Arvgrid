@@ -230,7 +230,7 @@ export function useAudioEngine() {
     // v8: 根据 WASM_ENABLED 选择 JS worklet 或 WASM worklet
     if (WASM_ENABLED && isWasmSupported()) {
       try {
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=1', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=2', location.href).href;
         await ctx.audioWorklet.addModule(workletUrl);
         const workletNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
           numberOfInputs: 0,
