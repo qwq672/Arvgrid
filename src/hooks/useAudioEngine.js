@@ -230,7 +230,7 @@ export function useAudioEngine() {
     // v8: 根据 WASM_ENABLED 选择 JS worklet 或 WASM worklet
     if (WASM_ENABLED && isWasmSupported()) {
       try {
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=2', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=3', location.href).href;
         await ctx.audioWorklet.addModule(workletUrl);
         const workletNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
           numberOfInputs: 0,
@@ -483,33 +483,26 @@ export function useAudioEngine() {
 
   function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum, batchBuffer, trackVol = 1) {
     const ctx = audioCtxRef.current;
-    // v8: WASM backend 直接发 note_on 给 worklet，不需要 sample 查找
+    // v8: WASM backend 批量调度，避免大量 setTimeout 导致主线程卡顿
     if (workletBackendRef.current === 'wasm' && workletReadyRef.current && workletNodeRef.current) {
       const midi = noteToMidi(pitch);
       const channel = isDrum ? 9 : 0;  // GM 鼓组在 channel 9
-      // WASM 路径用 setTimeout 调度 note_on（rustysynth 实时合成）
-      const delayMs = Math.max(0, (whenSec - ctx.currentTime) * 1000);
-      const tid = setTimeout(() => {
-        if (isPlayingRef.current && !isPausedRef.current && workletNodeRef.current) {
-          workletNodeRef.current.port.postMessage({
-            type: 'note-on',
-            channel,
-            key: midi,
-            velocity,
-          });
-          // 调度 note_off
-          setTimeout(() => {
-            if (workletNodeRef.current) {
-              workletNodeRef.current.port.postMessage({
-                type: 'note-off',
-                channel,
-                key: midi,
-              });
-            }
-          }, duration * 1000);
-        }
-      }, delayMs);
-      scheduledTimeoutsRef.current.push(tid);
+      // 收集到 batchBuffer，由调用方一次性发送
+      // 不再用 setTimeout 逐个调度，避免密集音符时主线程被定时器淹没
+      const noteMsg = {
+        type: 'note-on',
+        channel,
+        key: midi,
+        velocity,
+        whenSec,         // 调度时间
+        duration,        // 音符时长（用于 note-off 调度）
+      };
+      if (batchBuffer) {
+        batchBuffer.push(noteMsg);
+      } else {
+        // 单音符试听场景：直接发送
+        workletNodeRef.current.port.postMessage(noteMsg);
+      }
       // 返回轻量占位 group
       const stopT = whenSec + duration + 0.15;
       return { oscillators: [], sources: [], allNodes: [], stopTime: stopT, worklet: true };
@@ -752,7 +745,8 @@ export function useAudioEngine() {
 
     // 调度即将到达的音符
     // P4 优化：收集一个调度周期内所有 SF2 note-on，最后一次性 postMessage
-    const sf2BatchBuffer = (src === 'sf2' && sf2DataRef.current && workletReadyRef.current && workletNodeRef.current) ? [] : null;
+    // WASM 和 JS 路径都走批量发送，避免密集音符时主线程卡顿
+    const sf2BatchBuffer = (src === 'sf2' && workletReadyRef.current && workletNodeRef.current) ? [] : null;
 
     while (nextEventIndexRef.current < events.length) {
       const ev = events[nextEventIndexRef.current];
@@ -777,7 +771,7 @@ export function useAudioEngine() {
           }
         }, delayMs);
         scheduledTimeoutsRef.current.push(tid);
-      } else if (src === 'sf2' && sf2DataRef.current) {
+      } else if (src === 'sf2' && (sf2DataRef.current || workletBackendRef.current === 'wasm')) {
         group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum, sf2BatchBuffer, ev.trackVol ?? 1);
       } else {
         group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.trackVol ?? 1);
@@ -833,7 +827,8 @@ export function useAudioEngine() {
     if (src === 'network' && instrumentRef.current) {
       const vol = (velocity / 127) * 0.5 * trackVol;
       instrumentRef.current.play(pitch, when, { gain: vol, duration });
-    } else if (src === 'sf2' && sf2DataRef.current) {
+    } else if (src === 'sf2' && (sf2DataRef.current || workletBackendRef.current === 'wasm')) {
+      // WASM 模式 sf2DataRef 可能为 null（rustysynth 内部管理），但 soundSource 仍是 'sf2'
       group = scheduleSF2Sample(when, pitch, duration, velocity, program, isDrum, null, trackVol);
     } else {
       group = scheduleSynthNote(when, pitch, duration, velocity, program, trackVol);
@@ -1084,12 +1079,36 @@ export function useAudioEngine() {
         if (onProgress) onProgress({ stage: 'parsing', percent: 0 });
 
         if (workletBackendRef.current === 'wasm' && workletReadyRef.current && workletNodeRef.current) {
-          // WASM 路径：直接传 SF2 字节给 WASM worklet
+          // WASM 路径：传 SF2 字节给 WASM worklet，等待 worklet 确认加载成功
           if (onProgress) onProgress({ stage: 'wasm-loading', percent: 50 });
-          workletNodeRef.current.port.postMessage({
-            type: 'load-sf2',
-            data: arrayBuffer,
-          }, [arrayBuffer]);
+
+          // 复制一份再 transfer，避免主线程的 arrayBuffer 被 detach 后无法访问
+          const sf2Copy = arrayBuffer.slice(0);
+          await new Promise((resolve, reject) => {
+            const handler = (e) => {
+              const msg = e.data;
+              if (msg.type === 'load-success') {
+                workletNodeRef.current.port.removeEventListener('message', handler);
+                resolve();
+              } else if (msg.type === 'load-error') {
+                workletNodeRef.current.port.removeEventListener('message', handler);
+                reject(new Error(msg.message || 'WASM SF2 load failed'));
+              }
+            };
+            workletNodeRef.current.port.addEventListener('message', handler);
+            workletNodeRef.current.port.postMessage({
+              type: 'load-sf2',
+              data: sf2Copy,
+            }, [sf2Copy]);
+            // 超时保护（30 秒）
+            setTimeout(() => {
+              workletNodeRef.current?.port.removeEventListener('message', handler);
+              reject(new Error('WASM SF2 load timeout (30s)'));
+            }, 30000);
+          }).catch(err => {
+            throw err;
+          });
+
           if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
           // WASM 模式不需要 sf2DataRef（rustysynth 内部管理）
           sf2DataRef.current = null;

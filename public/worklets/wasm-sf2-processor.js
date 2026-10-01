@@ -154,7 +154,57 @@ class WasmSf2Processor extends AudioWorkletProcessor {
         }
         case 'note-on': {
           if (this.audioCore) {
-            this.audioCore.note_on(msg.channel || 0, msg.key, msg.velocity);
+            // 支持 whenSec 字段：如果指定了未来时间，用 setTimeout 调度
+            // 否则立即触发
+            const delayMs = (msg.whenSec != null)
+              ? Math.max(0, (msg.whenSec - currentTime) * 1000)
+              : 0;
+            const trigger = () => {
+              if (!this.audioCore) return;
+              this.audioCore.note_on(msg.channel || 0, msg.key, msg.velocity);
+              // 调度 note-off
+              if (msg.duration != null && msg.duration > 0) {
+                setTimeout(() => {
+                  if (this.audioCore) {
+                    this.audioCore.note_off(msg.channel || 0, msg.key);
+                  }
+                }, msg.duration * 1000);
+              }
+            };
+            if (delayMs > 5) {
+              setTimeout(trigger, delayMs);
+            } else {
+              trigger();
+            }
+          }
+          break;
+        }
+        case 'note-on-batch': {
+          // 批量调度：JS 主线程一次性发送一个调度周期内所有音符
+          // 比逐个 postMessage 减少主线程开销
+          if (this.audioCore && msg.notes) {
+            for (let i = 0; i < msg.notes.length; i++) {
+              const n = msg.notes[i];
+              const delayMs = (n.whenSec != null)
+                ? Math.max(0, (n.whenSec - currentTime) * 1000)
+                : 0;
+              const trigger = () => {
+                if (!this.audioCore) return;
+                this.audioCore.note_on(n.channel || 0, n.key, n.velocity);
+                if (n.duration != null && n.duration > 0) {
+                  setTimeout(() => {
+                    if (this.audioCore) {
+                      this.audioCore.note_off(n.channel || 0, n.key);
+                    }
+                  }, n.duration * 1000);
+                }
+              };
+              if (delayMs > 5) {
+                setTimeout(trigger, delayMs);
+              } else {
+                trigger();
+              }
+            }
           }
           break;
         }

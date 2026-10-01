@@ -568,8 +568,8 @@ function renderDrumNote(
   osc.frequency.exponentialRampToValueAtTime(bodyFreq, whenSec + 0.03);
   const bodyGain = ctx.createGain();
   bodyGain.gain.setValueAtTime(0.0001, whenSec);
-  bodyGain.gain.setTargetAtTime(safeVol * 0.5, whenSec + attack, tc);
-  bodyGain.gain.setTargetAtTime(0.0001, whenSec + decay + release + 0.05, tc);
+  bodyGain.gain.linearRampToValueAtTime(safeVol * 0.5, whenSec + attack + 0.005);
+  bodyGain.gain.linearRampToValueAtTime(0.0001, whenSec + decay + release + 0.05);
   osc.connect(bodyGain);
   bodyGain.connect(destination);
   osc.start(whenSec);
