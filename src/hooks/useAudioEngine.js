@@ -100,9 +100,36 @@ export function useAudioEngine() {
   const workletNodeRef = useRef(null); // SF2 AudioWorkletNode（单节点替代所有 per-note 节点）
   const workletReadyRef = useRef(false); // worklet 是否已成功注册并加载
   const workletSampleIdCounterRef = useRef(0); // worklet sample ID 计数器
+  const workletBackendRef = useRef('js'); // 'js' 或 'wasm'
 
   useEffect(() => { soundSourceRef.current = soundSource; }, [soundSource]);
   useEffect(() => { metronomeOnRef.current = metronomeOn; }, [metronomeOn]);
+
+  // 内部方法：加载 JS worklet（原 SF2 processor）
+  const loadJsWorkletImpl = useCallback(async (ctx, noteBus) => {
+    try {
+      // v7: 修复音符断裂 click 声——release 三次方衰减 + 记录进入时增益 + 默认 200ms
+      const workletUrl = new URL('worklets/sf2-processor.js?v=7', location.href).href;
+      await ctx.audioWorklet.addModule(workletUrl);
+      const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+      });
+      workletNode.connect(noteBus);
+      workletNodeRef.current = workletNode;
+      workletReadyRef.current = true;
+      workletBackendRef.current = 'js';
+      // 初始复音数同步到 worklet
+      workletNode.port.postMessage({
+        type: 'set-polyphony',
+        value: WORKLET_POLYPHONY,
+      });
+    } catch (err) {
+      console.warn('AudioWorklet 加载失败，SF2 播放将受影响:', err);
+      workletReadyRef.current = false;
+    }
+  }, []);
 
   const initAudio = useCallback(async () => {
     if (audioCtxRef.current) return audioCtxRef.current;
@@ -200,35 +227,31 @@ export function useAudioEngine() {
     noteBusRef.current = noteBus;
 
     // 注册 SF2 AudioWorklet：单 processor 实例 + 内部 voice pool
-    // 替代每个音符创建 BufferSource+Gain 的节点模型，100 同时发声从 200+ 节点降为 1 节点
-    try {
-      // 加版本号查询串强制浏览器加载最新 worklet 代码（worklet 模块会被强缓存）
-      // v4: 三次插值 + SF2 循环点 + 真实 ADSR
-      // v5: 循环回卷用 modulo 防止高音跳跃、软限幅阈值 0.9→0.95
-      // v6: 线性插值替代三次（CPU 减半）、WORKLET_POLYPHONY 128→64
-      // v7: 修复音符断裂 click 声——release 三次方衰减 + 记录进入时增益 + 默认 200ms
-      const workletUrl = new URL('worklets/sf2-processor.js?v=7', location.href).href;
-      await ctx.audioWorklet.addModule(workletUrl);
-      const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
-        numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
-      workletNode.connect(noteBus);
-      workletNodeRef.current = workletNode;
-      workletReadyRef.current = true;
-      // 初始复音数同步到 worklet（音频线程独立高复音，不受主线程自适应降级影响）
-      workletNode.port.postMessage({
-        type: 'set-polyphony',
-        value: WORKLET_POLYPHONY,
-      });
-    } catch (err) {
-      console.warn('AudioWorklet 加载失败，SF2 播放将受影响:', err);
-      workletReadyRef.current = false;
+    // v8: 根据 WASM_ENABLED 选择 JS worklet 或 WASM worklet
+    if (WASM_ENABLED && isWasmSupported()) {
+      try {
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=1', location.href).href;
+        await ctx.audioWorklet.addModule(workletUrl);
+        const workletNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
+          numberOfInputs: 0,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+        });
+        workletNode.connect(noteBus);
+        workletNodeRef.current = workletNode;
+        workletReadyRef.current = true;
+        workletBackendRef.current = 'wasm';
+        console.log('[arvgrid] WASM SF2 worklet loaded');
+      } catch (err) {
+        console.warn('[arvgrid] WASM worklet failed, fallback to JS worklet:', err);
+        await loadJsWorkletImpl(ctx, noteBus);
+      }
+    } else {
+      await loadJsWorkletImpl(ctx, noteBus);
     }
 
     return ctx;
-  }, []);
+  }, [loadJsWorkletImpl]);
 
   function generateReverbIR(ctx, duration, decay) {
     const sampleRate = ctx.sampleRate;
@@ -460,6 +483,38 @@ export function useAudioEngine() {
 
   function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum, batchBuffer, trackVol = 1) {
     const ctx = audioCtxRef.current;
+    // v8: WASM backend 直接发 note_on 给 worklet，不需要 sample 查找
+    if (workletBackendRef.current === 'wasm' && workletReadyRef.current && workletNodeRef.current) {
+      const midi = noteToMidi(pitch);
+      const channel = isDrum ? 9 : 0;  // GM 鼓组在 channel 9
+      // WASM 路径用 setTimeout 调度 note_on（rustysynth 实时合成）
+      const delayMs = Math.max(0, (whenSec - ctx.currentTime) * 1000);
+      const tid = setTimeout(() => {
+        if (isPlayingRef.current && !isPausedRef.current && workletNodeRef.current) {
+          workletNodeRef.current.port.postMessage({
+            type: 'note-on',
+            channel,
+            key: midi,
+            velocity,
+          });
+          // 调度 note_off
+          setTimeout(() => {
+            if (workletNodeRef.current) {
+              workletNodeRef.current.port.postMessage({
+                type: 'note-off',
+                channel,
+                key: midi,
+              });
+            }
+          }, duration * 1000);
+        }
+      }, delayMs);
+      scheduledTimeoutsRef.current.push(tid);
+      // 返回轻量占位 group
+      const stopT = whenSec + duration + 0.15;
+      return { oscillators: [], sources: [], allNodes: [], stopTime: stopT, worklet: true };
+    }
+
     if (!ctx || !sf2DataRef.current) {
       return scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol);
     }
@@ -1023,45 +1078,40 @@ export function useAudioEngine() {
     loadSF2: async (arrayBuffer, onProgress) => {
       await initAudio();
       try {
-        // 阶段 1：解析 SF2
-        // 优先级：WASM（实验性）→ Web Worker（JS）→ 主线程（fallback）
+        // v8: 根据 worklet backend 选择加载方式
+        // WASM backend：整个 SF2 文件传给 worklet，rustysynth 内部解析
+        // JS backend：主线程/worker 解析后传 sample 给 worklet
         if (onProgress) onProgress({ stage: 'parsing', percent: 0 });
+
+        if (workletBackendRef.current === 'wasm' && workletReadyRef.current && workletNodeRef.current) {
+          // WASM 路径：直接传 SF2 字节给 WASM worklet
+          if (onProgress) onProgress({ stage: 'wasm-loading', percent: 50 });
+          workletNodeRef.current.port.postMessage({
+            type: 'load-sf2',
+            data: arrayBuffer,
+          }, [arrayBuffer]);
+          if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
+          // WASM 模式不需要 sf2DataRef（rustysynth 内部管理）
+          sf2DataRef.current = null;
+          sf2PresetMapRef.current.clear();
+          setSoundSource('sf2');
+          return { success: true, name: 'SF2 (WASM)' };
+        }
+
+        // JS 路径：用 Web Worker 解析
         let sf2Data;
         let parseMs = 0;
-        let usedWasm = false;
-
-        // 尝试 WASM 后端（如果用户在设置里开启）
-        if (WASM_ENABLED && isWasmSupported()) {
-          try {
-            if (onProgress) onProgress({ stage: 'wasm-loading', percent: 0 });
-            const t0 = performance.now();
-            sf2Data = await parseSF2WithWasm(arrayBuffer, (stage, percent) => {
-              if (onProgress) onProgress({ stage: 'wasm-' + stage, percent });
-            });
-            parseMs = Math.round(performance.now() - t0);
-            usedWasm = true;
-            if (onProgress) onProgress({ stage: 'parsing', percent: 100, parseMs, backend: 'wasm' });
-          } catch (err) {
-            console.warn('[arvgrid] WASM SF2 parse failed, fallback to JS:', err);
-            if (onProgress) onProgress({ stage: 'wasm-fallback', message: err.message });
-          }
+        try {
+          const result = await parseSF2InWorker(arrayBuffer, (p) => {
+            if (onProgress) onProgress({ stage: 'parsing', percent: p });
+          });
+          sf2Data = result.sf2Data;
+          parseMs = result.parseMs;
+        } catch (err) {
+          console.warn('[arvgrid] SF2 worker failed, fallback to main thread:', err);
+          sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
         }
-
-        // WASM 未启用或失败，使用 Web Worker（JS 解析）
-        if (!sf2Data) {
-          try {
-            const result = await parseSF2InWorker(arrayBuffer, (p) => {
-              if (onProgress) onProgress({ stage: 'parsing', percent: p });
-            });
-            sf2Data = result.sf2Data;
-            parseMs = result.parseMs;
-          } catch (err) {
-            // Worker 加载失败（极旧浏览器）回退到主线程解析
-            console.warn('[arvgrid] SF2 worker failed, fallback to main thread:', err);
-            sf2Data = parseSF2(arrayBuffer, audioCtxRef.current);
-          }
-          if (onProgress) onProgress({ stage: 'parsing', percent: 100, parseMs, backend: 'js' });
-        }
+        if (onProgress) onProgress({ stage: 'parsing', percent: 100, parseMs, backend: 'js' });
 
         sf2DataRef.current = sf2Data;
         sf2BuffersRef.current = {};
@@ -1070,14 +1120,11 @@ export function useAudioEngine() {
         setSoundSource('sf2');
 
         // 阶段 2：将样本数据传输到 worklet（分批进行，不阻塞 UI）
-        // worklet 在音频线程内完成样本读取、变调、包络，无需创建 AudioBuffer
         if (workletReadyRef.current && workletNodeRef.current) {
-          // 先清除 worklet 中旧的样本库（加载新 SF2 时）
           workletNodeRef.current.port.postMessage({ type: 'clear-samples' });
           await sendSamplesToWorklet(sf2Data, workletNodeRef.current, workletSampleIdCounterRef, (p) => {
             if (onProgress) onProgress({ stage: 'transferring', percent: p });
           });
-          // 同步当前复音数到 worklet
           workletNodeRef.current.port.postMessage({
             type: 'set-polyphony',
             value: adaptivePolyphonyRef.current,
