@@ -9,11 +9,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Step 1: 构建 WASM 音频核心（如果 audio-core 有变更）
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            audio-core/target
+          key: ${{ runner.os }}-cargo-deploy-${{ hashFiles('audio-core/Cargo.toml') }}
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build WASM audio core
+        working-directory: audio-core
+        run: wasm-pack build --target web --features wasm
+      - name: Copy WASM to public
+        run: |
+          mkdir -p public/wasm
+          cp audio-core/pkg/audio_core.js audio-core/pkg/audio_core_bg.wasm public/wasm/
+          ls -lh public/wasm/
+
+      # Step 2: 构建网页端
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - run: npm install
       - run: npm run build
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist

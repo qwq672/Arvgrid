@@ -1,0 +1,33 @@
+[package]
+name = "arvgrid-desktop"
+version = "0.1.0"
+description = "Arvgrid Desktop - Professional MIDI editor (native, high-performance)"
+authors = ["qwq672"]
+license = "MIT"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 2 核心
+tauri = { version = "2", features = [] }
+# 跨端音频核心（共享源码）
+audio-core = { path = "../../audio-core", features = ["native"] }
+# 低延迟音频输出
+cpal = "0.15"
+# 多线程混音
+rayon = "1.10"
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = false

@@ -1,0 +1,8 @@
+# Tauri build artifacts
+target/
+
+# Tauri generated
+gen/
+
+# Cargo lock（桌面端独立）
+Cargo.lock
