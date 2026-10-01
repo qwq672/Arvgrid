@@ -74,6 +74,13 @@ export function useAudioEngine() {
   const dryGainNodeRef = useRef(null);
   const analyserNodeRef = useRef(null);
   const soundSourceRef = useRef('default');
+  // EQ 3 段均衡器
+  const eqLowRef = useRef(null);
+  const eqMidRef = useRef(null);
+  const eqHighRef = useRef(null);
+  const [eqLow, setEqLowState] = useState(0);
+  const [eqMid, setEqMidState] = useState(0);
+  const [eqHigh, setEqHighState] = useState(0);
   const [metronomeOn, setMetronomeOn] = useState(false);
   const metronomeOnRef = useRef(false);
   const bpmRef = useRef(120);
@@ -161,7 +168,30 @@ export function useAudioEngine() {
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 1024; // 降低每帧遍历开销（2048→1024 减半）
     analyser.smoothingTimeConstant = 0.8;
-    master.connect(compressor);
+
+    // 3 段均衡器（低/中/高）—— v9 新增
+    // 插在 master 之后、compressor 之前，所有音频都经过 EQ
+    const eqLow = ctx.createBiquadFilter();
+    eqLow.type = 'lowshelf';
+    eqLow.frequency.value = 200;
+    eqLow.gain.value = 0;  // dB，-12 ~ +12
+    const eqMid = ctx.createBiquadFilter();
+    eqMid.type = 'peaking';
+    eqMid.frequency.value = 1000;
+    eqMid.Q.value = 1.0;
+    eqMid.gain.value = 0;
+    const eqHigh = ctx.createBiquadFilter();
+    eqHigh.type = 'highshelf';
+    eqHigh.frequency.value = 5000;
+    eqHigh.gain.value = 0;
+    eqLowRef.current = eqLow;
+    eqMidRef.current = eqMid;
+    eqHighRef.current = eqHigh;
+
+    master.connect(eqLow);
+    eqLow.connect(eqMid);
+    eqMid.connect(eqHigh);
+    eqHigh.connect(compressor);
     compressor.connect(analyser);
     analyser.connect(ctx.destination);
     analyserNodeRef.current = analyser;
@@ -231,7 +261,7 @@ export function useAudioEngine() {
     // v8: 根据 WASM_ENABLED 选择 JS worklet 或 WASM worklet
     if (WASM_ENABLED && isWasmSupported()) {
       try {
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=5', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=6', location.href).href;
         await ctx.audioWorklet.addModule(workletUrl);
         const workletNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
           numberOfInputs: 0,
@@ -1095,6 +1125,22 @@ export function useAudioEngine() {
       setDelayFeedback(val);
       if (delayFeedbackRef.current) delayFeedbackRef.current.gain.value = val;
     },
+    // EQ 3 段均衡器（-12 ~ +12 dB）
+    eqLow,
+    setEqLow: (val) => {
+      setEqLowState(val);
+      if (eqLowRef.current) eqLowRef.current.gain.value = val;
+    },
+    eqMid,
+    setEqMid: (val) => {
+      setEqMidState(val);
+      if (eqMidRef.current) eqMidRef.current.gain.value = val;
+    },
+    eqHigh,
+    setEqHigh: (val) => {
+      setEqHighState(val);
+      if (eqHighRef.current) eqHighRef.current.gain.value = val;
+    },
     audioCtxRef,
     soundSource,
     setSoundSource,
@@ -1208,7 +1254,7 @@ export function useAudioEngine() {
     performanceInfo,
   }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback,
       isPlaying, isPaused, currentTime, totalDuration, getPlaybackTime, seekTo,
-      reverbSend, delaySend, delayTime, delayFeedback, soundSource, metronomeOn,
+      reverbSend, delaySend, delayTime, delayFeedback, eqLow, eqMid, eqHigh, soundSource, metronomeOn,
       bufferSize, performanceInfo, initAudio, setSoundSource, setBufferSize, masterVolume]);
 }
 

@@ -25,7 +25,7 @@ const Editor = memo(({
     undo, redo, setCurrentTrackId,
   } = project;
 
-  const { playNote, reverbSend, setReverbSend, delaySend, setDelaySend, delayTime, setDelayTime, delayFeedback, setDelayFeedback } = audioEngine;
+  const { playNote, reverbSend, setReverbSend, delaySend, setDelaySend, delayTime, setDelayTime, delayFeedback, setDelayFeedback, eqLow, setEqLow, eqMid, setEqMid, eqHigh, setEqHigh } = audioEngine;
   const currentTrack = tracks.find(t => t.id === currentTrackId);
   const [editMode, setEditMode] = useState('pointer');
   const [quantizeValue, setQuantizeValue] = useState('1/4');
@@ -159,6 +159,11 @@ const Editor = memo(({
         onQuantizeValueChange={setQuantizeValue}
         onOpenAbout={handleOnOpenAbout}
         performanceInfo={audioEngine.performanceInfo}
+        // 感叹号指示器：有非默认效果设置时显示
+        hasEffectsWarning={
+          (reverbSend !== 0.08) || (delaySend !== 0.1) ||
+          (eqLow !== 0) || (eqMid !== 0) || (eqHigh !== 0)
+        }
       />
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 6, gap: 6, minHeight: 0 }}>
         <button
@@ -233,6 +238,12 @@ const Editor = memo(({
         onDelayTimeChange={setDelayTime}
         delayFeedback={delayFeedback}
         onDelayFeedbackChange={setDelayFeedback}
+        eqLow={eqLow}
+        onEqLowChange={setEqLow}
+        eqMid={eqMid}
+        onEqMidChange={setEqMid}
+        eqHigh={eqHigh}
+        onEqHighChange={setEqHigh}
         metronomeOn={audioEngine.metronomeOn}
         onMetronomeOnChange={audioEngine.setMetronomeOn}
         masterVolume={audioEngine.masterVolume}

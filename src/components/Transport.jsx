@@ -22,6 +22,9 @@ export default function Transport({
   onDelayTimeChange,
   delayFeedback,
   onDelayFeedbackChange,
+  eqLow, onEqLowChange,
+  eqMid, onEqMidChange,
+  eqHigh, onEqHighChange,
   metronomeOn,
   onMetronomeOnChange,
   masterVolume,
@@ -180,6 +183,13 @@ export default function Transport({
         <input type="range" min="0.05" max="1" step="0.01" value={delayTime} onChange={(e) => onDelayTimeChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
         <span style={{ fontSize: '0.7rem' }}>{t.delayFeedback}</span>
         <input type="range" min="0" max="0.9" step="0.01" value={delayFeedback} onChange={(e) => onDelayFeedbackChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
+        {/* EQ 3 段均衡器 */}
+        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '低音' : 'Low'}</span>
+        <input type="range" min="-12" max="12" step="0.5" value={eqLow} onChange={(e) => onEqLowChange && onEqLowChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
+        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '中音' : 'Mid'}</span>
+        <input type="range" min="-12" max="12" step="0.5" value={eqMid} onChange={(e) => onEqMidChange && onEqMidChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
+        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '高音' : 'High'}</span>
+        <input type="range" min="-12" max="12" step="0.5" value={eqHigh} onChange={(e) => onEqHighChange && onEqHighChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
       </div>
     </div>
   );

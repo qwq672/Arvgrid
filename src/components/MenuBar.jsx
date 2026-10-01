@@ -17,6 +17,7 @@ const MenuBar = memo(function MenuBar({
   onQuantizeValueChange = null,
   onOpenAbout = null,
   performanceInfo = { level: 'low', mem: 0 },
+  hasEffectsWarning = false,
 }) {
   const [activeMenu, setActiveMenu] = useState(null);
   const menuRef = useRef(null);
@@ -190,6 +191,31 @@ const MenuBar = memo(function MenuBar({
           </div>
         );
       })()}
+
+      {/* 效果器警告：EQ/混响等设置非默认时显示感叹号 */}
+      {hasEffectsWarning && (
+        <div
+          title={lang === 'zh'
+            ? '检测到效果器设置（EQ/混响/延迟），部分设置无法导出到 MIDI 文件'
+            : 'Effect settings detected (EQ/reverb/delay), some settings cannot be exported to MIDI'}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 18,
+            height: 18,
+            borderRadius: '50%',
+            background: '#e0c040',
+            color: '#000',
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            flexShrink: 0,
+            marginLeft: 4,
+          }}
+        >
+          !
+        </div>
+      )}
 
       {/* 文件菜单 */}
       <div className={`menu-item ${activeMenu === 'file' ? 'active' : ''}`} onClick={() => handleMenuClick('file')}>

@@ -97,20 +97,31 @@ let _wasmResolve = null;
 let _wasmReject = null;
 let _wasmPromise = null;
 
+// processor 实例注册后，调用此函数请求主线程发 wasm 字节
+let _requestWasmBytesFn = null;
+
+function setRequestWasmBytesFn(fn) {
+  _requestWasmBytesFn = fn;
+}
+
 function ensureWasmLoaded() {
   if (_wasmReady) return Promise.resolve();
   if (_wasmPromise) return _wasmPromise;
   _wasmPromise = new Promise((resolve, reject) => {
     _wasmResolve = resolve;
     _wasmReject = reject;
-    // 通知主线程发 wasm 字节过来
-    self.postMessage({ type: 'request-wasm-bytes' });
+    // 通过 processor 的 port 通知主线程发 wasm 字节
+    if (_requestWasmBytesFn) {
+      _requestWasmBytesFn();
+    } else {
+      reject(new Error('No request function registered'));
+    }
   });
   return _wasmPromise;
 }
 
-// 主线程发来 wasm 模块代码（audio_core.js 的 import 结果）和 wasm 字节
-async function initWasmFromMain(wasmJsCode, wasmBytes) {
+// 主线程发来 wasm 字节，初始化 WASM 模块
+async function initWasmFromMain(wasmBytes) {
   // 如果主线程报错（fetch 失败）
   if (!wasmBytes) {
     const err = new Error('No wasm bytes received from main thread');
@@ -119,8 +130,8 @@ async function initWasmFromMain(wasmJsCode, wasmBytes) {
     return;
   }
   try {
-    console.log('[wasm-worklet] initWasmFromMain: start');
-    // 用动态 import 加载 audio_core.js（不能用 eval，CSP 会拦）
+    console.log('[wasm-worklet] initWasmFromMain: start, bytes:', wasmBytes.byteLength);
+    // 用动态 import 加载 audio_core.js
     console.log('[wasm-worklet] importing audio_core.js...');
     const mod = await import('../wasm/audio_core.js');
     _init = mod.default;
@@ -131,7 +142,7 @@ async function initWasmFromMain(wasmJsCode, wasmBytes) {
       throw new Error(`audio_core.js default export is not a function (got ${typeof _init})`);
     }
 
-    console.log('[wasm-worklet] initializing wasm with', wasmBytes.byteLength, 'bytes...');
+    console.log('[wasm-worklet] initializing wasm...');
     await _init(wasmBytes);
     console.log('[wasm-worklet] wasm initialized');
 
@@ -153,12 +164,22 @@ class WasmSf2Processor extends AudioWorkletProcessor {
     this._rightBuf = null;
     this._blockSize = 0;
 
+    // 注册请求 wasm 字节的函数（通过 this.port 发消息）
+    const port = this.port;
+    setRequestWasmBytesFn(() => {
+      port.postMessage({ type: 'request-wasm-bytes' });
+    });
+
     this.port.onmessage = async (e) => {
       const msg = e.data;
       switch (msg.type) {
         case 'init-wasm-bytes': {
           // 主线程发来 wasm 字节，初始化 WASM 模块
-          await initWasmFromMain(null, msg.wasmBytes);
+          if (msg.error) {
+            await initWasmFromMain(null);
+          } else {
+            await initWasmFromMain(msg.wasmBytes);
+          }
           break;
         }
         case 'load-sf2': {
