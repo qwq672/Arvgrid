@@ -20,6 +20,7 @@ const MenuBar = memo(function MenuBar({
   hasEffectsWarning = false,
 }) {
   const [activeMenu, setActiveMenu] = useState(null);
+  const [warningOpen, setWarningOpen] = useState(false);
   const menuRef = useRef(null);
   const t = useTranslation(lang);
   const oscCanvasRef = useRef(null);
@@ -192,29 +193,75 @@ const MenuBar = memo(function MenuBar({
         );
       })()}
 
-      {/* 效果器警告：EQ/混响等设置非默认时显示感叹号 */}
+      {/* 效果器警告：EQ/混响等设置非默认时显示感叹号，点击弹出详情 */}
       {hasEffectsWarning && (
-        <div
-          title={lang === 'zh'
-            ? '检测到效果器设置（EQ/混响/延迟），部分设置无法导出到 MIDI 文件'
-            : 'Effect settings detected (EQ/reverb/delay), some settings cannot be exported to MIDI'}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 18,
-            height: 18,
-            borderRadius: '50%',
-            background: '#e0c040',
-            color: '#000',
-            fontSize: '0.75rem',
-            fontWeight: 700,
-            flexShrink: 0,
-            marginLeft: 4,
-          }}
-        >
-          !
-        </div>
+        <>
+          <div
+            onClick={() => setWarningOpen(v => !v)}
+            title={lang === 'zh'
+              ? '检测到效果器设置，部分设置无法导出到 MIDI 文件。点击查看详情'
+              : lang === 'ja'
+              ? 'エフェクト設定が検出されました。一部の設定は MIDI ファイルにエクスポートできません。クリックで詳細'
+              : lang === 'ko'
+              ? '이펙트 설정이 감지되었습니다. 일부 설정은 MIDI 파일로 내보낼 수 없습니다. 클릭하여 상세 보기'
+              : 'Effect settings detected. Some settings cannot be exported to MIDI. Click for details'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 20,
+              height: 20,
+              borderRadius: '50%',
+              background: '#e0c040',
+              color: '#000',
+              fontSize: '0.8rem',
+              fontWeight: 700,
+              flexShrink: 0,
+              marginLeft: 4,
+              cursor: 'pointer',
+            }}
+          >
+            !
+          </div>
+          {warningOpen && (
+            <div style={{ position: 'fixed', inset: 0, zIndex: 9999 }} onClick={() => setWarningOpen(false)}>
+              <div
+                onClick={e => e.stopPropagation()}
+                style={{
+                  position: 'fixed',
+                  top: 40,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  background: 'var(--panel)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: 16,
+                  minWidth: 320,
+                  maxWidth: '90vw',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                  zIndex: 10000,
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 8, fontSize: '0.9rem' }}>
+                  {lang === 'zh' ? '无法导出到 MIDI 的设置' : lang === 'ja' ? 'MIDI にエクスポートできない設定' : lang === 'ko' ? 'MIDI로 내보낼 수 없는 설정' : 'Settings that cannot be exported to MIDI'}
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 20, fontSize: '0.75rem', lineHeight: 1.8, color: 'var(--text-muted)' }}>
+                  <li>{lang === 'zh' ? 'EQ 均衡器设置（低/中/高）' : lang === 'ja' ? 'EQ イコライザー設定' : lang === 'ko' ? 'EQ 이퀄라이저 설정' : 'EQ equalizer settings (Low/Mid/High)'}</li>
+                  <li>{lang === 'zh' ? '混响效果（Reverb）' : lang === 'ja' ? 'リバーブ効果' : lang === 'ko' ? '리버브 효과' : 'Reverb effect'}</li>
+                  <li>{lang === 'zh' ? '延迟效果（Delay）' : lang === 'ja' ? 'ディレイ効果' : lang === 'ko' ? '딜레이 효과' : 'Delay effect'}</li>
+                  <li>{lang === 'zh' ? '空间效果（Spatial）' : lang === 'ja' ? '空間効果' : lang === 'ko' ? '공간 효과' : 'Spatial effect'}</li>
+                  <li>{lang === 'zh' ? '单音轨效果器设置' : lang === 'ja' ? 'トラック個別エフェクト設定' : lang === 'ko' ? '트랙 개별 이펙터 설정' : 'Per-track effect settings'}</li>
+                </ul>
+                <div style={{ marginTop: 8, fontSize: '0.7rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                  {lang === 'zh' ? 'MIDI 格式仅保存音符数据，音频效果仅在播放/导出音频时生效。' : lang === 'ja' ? 'MIDI 形式は音符データのみを保存します。オーディオ効果は再生/オーディオ書き出し時にのみ有効です。' : lang === 'ko' ? 'MIDI 형식은音符 데이터만 저장합니다. 오디오 효과는 재생/오디오 내보내기 시에만 적용됩니다.' : 'MIDI format only stores note data. Audio effects apply only during playback/audio export.'}
+                </div>
+                <button onClick={() => setWarningOpen(false)} style={{ marginTop: 10, width: '100%' }}>
+                  {lang === 'zh' ? '知道了' : lang === 'ja' ? '了解' : lang === 'ko' ? '확인' : 'Got it'}
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* 文件菜单 */}
