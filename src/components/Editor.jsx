@@ -196,6 +196,7 @@ const Editor = memo(({
             onCommentChange={(id, comment) => updateTrack(id, { comment })}
             onGroupChange={handleOnGroupChange}
             onTrackReverbChange={handleOnTrackReverbChange}
+            onEffectsChange={(id, effects) => updateTrack(id, { effects })}
             playNote={playNote}
             lang={lang}
           />

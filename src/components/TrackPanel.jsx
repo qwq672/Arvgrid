@@ -165,7 +165,7 @@ export default function TrackPanel({
   tracks, currentTrackId, onSelectTrack, onAddTrack, onDeleteTrack,
   onVolumeChange, onPanChange, onMuteToggle, onProgramChange,
   onColorChange, onCommentChange,
-  onTrackReverbChange, onGroupChange,
+  onTrackReverbChange, onGroupChange, onEffectsChange,
   playNote, lang = 'zh',
 }) {
   const [instPanel, setInstPanel] = useState(null);
@@ -173,6 +173,7 @@ export default function TrackPanel({
   const [previewId, setPreviewId] = useState(null);
   const [ctxMenu, setCtxMenu] = useState(null);
   const [commentEdit, setCommentEdit] = useState(null);
+  const [fxPanel, setFxPanel] = useState(null);  // 效果器面板
   const clipboard = useRef(null);
   const t = useTranslation(lang);
 
@@ -270,6 +271,14 @@ export default function TrackPanel({
                   </button>
                   <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', width: 28, textAlign: 'center' }}>R</span>
                   <input type="range" min="0" max="100" value={track.reverb || 0} onChange={e => { e.stopPropagation(); onTrackReverbChange && onTrackReverbChange(track.id, parseInt(e.target.value)); }} style={{ width: 30 }} />
+                  {/* 单音轨效果器按钮 */}
+                  <button
+                    onClick={e => { e.stopPropagation(); setFxPanel(track.id); }}
+                    style={{ padding: '2px 4px', background: 'none', fontSize: '0.6rem' }}
+                    title={lang === 'zh' ? '效果器' : lang === 'ja' ? 'エフェクト' : lang === 'ko' ? '이펙터' : 'Effects'}
+                  >
+                    FX
+                  </button>
                   {track.comment && <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginLeft: 'auto', maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.comment}</span>}
                 </div>
               </div>
@@ -391,6 +400,82 @@ export default function TrackPanel({
           </div>
         </div>
       )}
+
+      {/* 单音轨效果器面板 */}
+      {fxPanel !== null && (() => {
+        const track = tracks.find(t => t.id === fxPanel);
+        if (!track) return null;
+        const fx = track.effects || { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 };
+        const updateFx = (key, val) => onEffectsChange && onEffectsChange(track.id, { ...fx, [key]: val });
+        return (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)' }} onClick={() => setFxPanel(null)} />
+            <div style={{ position: 'relative', width: 'min(420px, 90vw)', maxHeight: '85vh', background: 'var(--panel)', borderRadius: 12, border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ flex: 1, fontWeight: 600, fontSize: '0.9rem' }}>{lang === 'zh' ? '音轨效果器' : lang === 'ja' ? 'トラックエフェクト' : lang === 'ko' ? '트랙 이펙터' : 'Track Effects'}</span>
+                <button onClick={() => setFxPanel(null)} style={{ background: 'none', padding: 4 }}><Icons.Close /></button>
+              </div>
+              <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+                {/* EQ */}
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 8, fontWeight: 600 }}>{lang === 'zh' ? '均衡器 (EQ)' : 'Equalizer (EQ)'}</div>
+                  {[
+                    { key: 'eqLow', label: lang === 'zh' ? '低音' : lang === 'ja' ? '低音' : lang === 'ko' ? '저음' : 'Low', min: -12, max: 12 },
+                    { key: 'eqMid', label: lang === 'zh' ? '中音' : lang === 'ja' ? '中音' : lang === 'ko' ? '중음' : 'Mid', min: -12, max: 12 },
+                    { key: 'eqHigh', label: lang === 'zh' ? '高音' : lang === 'ja' ? '高音' : lang === 'ko' ? '고음' : 'High', min: -12, max: 12 },
+                  ].map(item => (
+                    <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ width: 40, fontSize: '0.7rem' }}>{item.label}</span>
+                      <input type="range" min={item.min} max={item.max} step="0.5" value={fx[item.key]} onChange={e => updateFx(item.key, parseFloat(e.target.value))} style={{ flex: 1 }} />
+                      <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{fx[item.key].toFixed(1)} dB</span>
+                    </div>
+                  ))}
+                </div>
+                {/* 混响 */}
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 8, fontWeight: 600 }}>{lang === 'zh' ? '混响 (Reverb)' : lang === 'ja' ? 'リバーブ (Reverb)' : lang === 'ko' ? '리버브 (Reverb)' : 'Reverb'}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ width: 40, fontSize: '0.7rem' }}>{lang === 'zh' ? '发送' : 'Send'}</span>
+                    <input type="range" min="0" max="1" step="0.01" value={fx.reverbSend} onChange={e => updateFx('reverbSend', parseFloat(e.target.value))} style={{ flex: 1 }} />
+                    <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{Math.round(fx.reverbSend * 100)}%</span>
+                  </div>
+                </div>
+                {/* 延迟 */}
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 8, fontWeight: 600 }}>{lang === 'zh' ? '延迟 (Delay)' : lang === 'ja' ? 'ディレイ (Delay)' : lang === 'ko' ? '딜레이 (Delay)' : 'Delay'}</div>
+                  {[
+                    { key: 'delaySend', label: lang === 'zh' ? '发送' : 'Send', min: 0, max: 1, step: 0.01, fmt: v => `${Math.round(v * 100)}%` },
+                    { key: 'delayTime', label: lang === 'zh' ? '时间' : 'Time', min: 0.05, max: 1, step: 0.01, fmt: v => `${v.toFixed(2)}s` },
+                    { key: 'delayFeedback', label: lang === 'zh' ? '反馈' : 'Feedback', min: 0, max: 0.9, step: 0.01, fmt: v => `${Math.round(v * 100)}%` },
+                  ].map(item => (
+                    <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ width: 40, fontSize: '0.7rem' }}>{item.label}</span>
+                      <input type="range" min={item.min} max={item.max} step={item.step} value={fx[item.key]} onChange={e => updateFx(item.key, parseFloat(e.target.value))} style={{ flex: 1 }} />
+                      <span style={{ width: 50, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{item.fmt(fx[item.key])}</span>
+                    </div>
+                  ))}
+                </div>
+                {/* 空间 */}
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 8, fontWeight: 600 }}>{lang === 'zh' ? '空间 (Spatial)' : lang === 'ja' ? '空間 (Spatial)' : lang === 'ko' ? '공간 (Spatial)' : 'Spatial'}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ width: 40, fontSize: '0.7rem' }}>{lang === 'zh' ? '宽度' : 'Width'}</span>
+                    <input type="range" min="0" max="1" step="0.01" value={fx.spatial} onChange={e => updateFx('spatial', parseFloat(e.target.value))} style={{ flex: 1 }} />
+                    <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{Math.round(fx.spatial * 100)}%</span>
+                  </div>
+                </div>
+                {/* 重置 */}
+                <button onClick={() => onEffectsChange && onEffectsChange(track.id, { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 })} style={{ width: '100%', marginTop: 8 }}>
+                  {lang === 'zh' ? '重置效果器' : lang === 'ja' ? 'エフェクトリセット' : lang === 'ko' ? '이펙트 초기화' : 'Reset Effects'}
+                </button>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.5 }}>
+                  {lang === 'zh' ? '注：效果器仅在播放/导出音频时生效，无法导出到 MIDI 文件。' : lang === 'ja' ? '注：エフェクトは再生/オーディオ書き出し時のみ有効です。MIDI ファイルにはエクスポートできません。' : lang === 'ko' ? '주의: 이펙트는 재생/오디오 내보내기 시에만 적용됩니다. MIDI 파일로 내보낼 수 없습니다.' : 'Note: Effects apply only during playback/audio export. Cannot be exported to MIDI.'}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
