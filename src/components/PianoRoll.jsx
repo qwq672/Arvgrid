@@ -359,14 +359,18 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   }, [draw]);
 
   // 初始绘制和依赖变化时触发 - 使用 requestRedraw 批量处理
+  // 优化：只在关键数据变化时重绘，减少无谓 RAF
+  const trackNotes = track?.notes;
+  const trackNotesLen = trackNotes?.length;
   useEffect(() => {
     requestRedraw();
-  }, [track, trackColor, ghostTracks, showGhosts, zoomX, zoomY, marqueeRect, draw]);
+  }, [trackNotes, trackNotesLen, trackColor, ghostTracks, showGhosts, zoomX, zoomY, marqueeRect, draw]);
 
   // 选中状态变化时触发重绘
+  const selectedNotesLen = selectedNotes.length;
   useEffect(() => {
     requestRedraw();
-  }, [selectedNotes]);
+  }, [selectedNotes, selectedNotesLen]);
 
   const drawPlayhead = useCallback((currentTime) => {
     const canvas = playheadCanvasRef.current;

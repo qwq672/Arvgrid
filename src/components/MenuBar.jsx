@@ -81,41 +81,60 @@ const MenuBar = memo(function MenuBar({
     // 复用 dataArray 避免每帧 GC（性能优化）
     let dataArray = null;
     let lastDrawTs = 0;
+    let isActive = false;  // 是否有活跃音频
+
+    // 画静态线（不播放时）
+    const drawIdle = () => {
+      if (ctx && canvas && canvas.width > 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.beginPath();
+        ctx.strokeStyle = '#3a3a42';
+        ctx.lineWidth = 1;
+        ctx.moveTo(0, canvas.height / 2);
+        ctx.lineTo(canvas.width, canvas.height / 2);
+        ctx.stroke();
+      }
+    };
+
     const draw = (ts) => {
       oscRafRef.current = requestAnimationFrame(draw);
-      // 节流到 ~15fps（66ms），减少移动设备主线程开销
-      // 示波器只是装饰性反馈，15fps 完全够用
+      // 节流到 ~15fps（66ms），减少主线程开销
       if (ts - lastDrawTs < 66) return;
       lastDrawTs = ts;
       const analyser = analyserNodeRef?.current;
       if (!analyser || !ctx || !canvas) {
-        // 无分析器时画一条静态线
-        if (ctx && canvas && canvas.width > 0) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.beginPath();
-          ctx.strokeStyle = '#4a8a6a';
-          ctx.lineWidth = 2;
-          ctx.moveTo(0, canvas.height / 2);
-          ctx.lineTo(canvas.width, canvas.height / 2);
-          ctx.stroke();
-        }
+        if (!isActive) drawIdle();
         return;
       }
       const bufferLength = analyser.fftSize;
       if (!dataArray || dataArray.length !== bufferLength) dataArray = new Uint8Array(bufferLength);
       try { analyser.getByteTimeDomainData(dataArray); } catch (e) { return; }
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 计算 RMS 音量（单次遍历）
+      // 检测是否有活跃音频（RMS > 阈值）
       let sum = 0;
-      let peak = 0;
       for (let i = 0; i < bufferLength; i++) {
         const v = (dataArray[i] - 128) / 128;
         sum += v * v;
+      }
+      const rms = Math.sqrt(sum / bufferLength);
+      if (rms < 0.001) {
+        // 静音状态：画静态线，不继续渲染波形
+        if (isActive) {
+          isActive = false;
+          drawIdle();
+        }
+        return;
+      }
+      isActive = true;
+
+      // 计算峰值（RMS 已在上面算过）
+      let peak = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        const v = (dataArray[i] - 128) / 128;
         const av = v < 0 ? -v : v;
         if (av > peak) peak = av;
       }
-      const rms = Math.sqrt(sum / bufferLength);
+      // rms 已在前面计算
 
       // 根据音量决定颜色：静音=绿色线条，中等=青色，大音量=黄色，爆音=红色
       let color;

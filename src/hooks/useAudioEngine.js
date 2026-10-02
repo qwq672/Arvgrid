@@ -753,7 +753,7 @@ export function useAudioEngine() {
     }
 
     // 节流更新性能信息（每 2 秒最多更新一次，减少 React re-render）
-    // 之前 500ms 触发一次会引发 Editor → MenuBar → PianoRoll 重渲染链，加重 UI 卡顿
+    // 优化：只在 level 真正变化时才 setState，避免无谓 re-render
     const elapsedSinceLastUpdate = now - lastPerfUpdateRef.current;
     if (elapsedSinceLastUpdate > 2.0) {
       lastPerfUpdateRef.current = now;
@@ -762,7 +762,6 @@ export function useAudioEngine() {
       let polyphonyChanged = false;
       if (schedulerLag > 0.15) {
         level = 'critical';
-        // 自适应降级：严重延迟时减少复音数
         const newPoly = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 4);
         if (newPoly !== adaptivePolyphonyRef.current) {
           adaptivePolyphonyRef.current = newPoly;
@@ -778,15 +777,16 @@ export function useAudioEngine() {
       } else if (schedulerLag > 0.001) {
         level = 'normal';
       } else {
-        // 性能良好时逐步恢复复音数
         if (adaptivePolyphonyRef.current < MAX_POLYPHONY) {
           adaptivePolyphonyRef.current = Math.min(MAX_POLYPHONY, adaptivePolyphonyRef.current + 1);
           polyphonyChanged = true;
         }
       }
-      setPerformanceInfo(prev => (prev.level === level ? prev : { level, mem }));
-      // worklet 复音数独立于主线程自适应（音频线程负载与主线程无关），
-      // 不再随 adaptivePolyphony 下降而触发 voice stealing 丢音符
+      // 只在 level 变化时才 setState，减少 React re-render 链
+      if (lastPerfLevelRef.current !== level) {
+        lastPerfLevelRef.current = level;
+        setPerformanceInfo({ level, mem });
+      }
     }
 
     // 清理已完成的节点组 - 原地修改避免 GC
@@ -802,8 +802,8 @@ export function useAudioEngine() {
     groups.length = writeIdx;
 
     // 调度即将到达的音符
-    // P4 优化：收集一个调度周期内所有 SF2 note-on，最后一次性 postMessage
-    // WASM 和 JS 路径都走批量发送，避免密集音符时主线程卡顿
+    // 优化：worklet 占位 group 不再 push 到 activeNodeGroupsRef，避免数组膨胀
+    // 只有合成器路径（scheduleSynthNote）才需要跟踪 AudioNode 用于 cleanup
     const sf2BatchBuffer = (src === 'sf2' && workletReadyRef.current && workletNodeRef.current) ? [] : null;
 
     while (nextEventIndexRef.current < events.length) {
@@ -812,10 +812,9 @@ export function useAudioEngine() {
 
       if (whenSec > lookahead) break;
 
-      // 复音数限制（自适应）
-      // SF2 模式下 worklet 内部管理 voice stealing，placeholder group 很轻量，
-      // 允许大量待播放音符入队，避免密集音符被跳过
-      const polyLimit = (src === 'sf2') ? 512 : adaptivePolyphonyRef.current;
+      // 复音数限制（自适应）——仅对合成器路径生效
+      // SF2 worklet 内部管理 voice stealing，不需要主线程限制
+      const polyLimit = (src === 'sf2') ? 1024 : adaptivePolyphonyRef.current;
       if (groups.length >= polyLimit) break;
 
       let group = null;
@@ -835,14 +834,15 @@ export function useAudioEngine() {
         group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.trackVol ?? 1);
       }
 
-      if (group) {
+      // 只有合成器路径的 group 才需要跟踪（worklet group 是轻量占位，不需要 cleanup）
+      if (group && !group.worklet) {
         groups.push(group);
       }
 
       nextEventIndexRef.current++;
     }
 
-    // 一次性发送批量 note-on（P4 优化）
+    // 一次性发送批量 note-on（减少 postMessage 次数）
     if (sf2BatchBuffer && sf2BatchBuffer.length > 0) {
       workletNodeRef.current.port.postMessage({ type: 'note-on-batch', notes: sf2BatchBuffer });
     }
@@ -904,7 +904,7 @@ export function useAudioEngine() {
     isPausedRef.current = false;
 
     if (playIntervalRef.current) {
-      clearInterval(playIntervalRef.current);
+      clearTimeout(playIntervalRef.current);
       playIntervalRef.current = null;
     }
     if (schedulerTimerRef.current) {
@@ -988,16 +988,18 @@ export function useAudioEngine() {
     // 启动前瞻调度器
     schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
 
-    // 不再用 setInterval 更新 currentTime，改由组件用 requestAnimationFrame 读取
-    // 只保留一个检查播放结束的定时器
-    playIntervalRef.current = setInterval(() => {
-      if (!isPlayingRef.current) return;
-      if (isPausedRef.current) return;
+    // 播放结束检查：用 setTimeout 链而非 setInterval，减少定时器数量
+    // 500ms 检查一次足够（比 200ms 稀疏，减少主线程定时器唤醒）
+    const checkPlaybackEnd = () => {
+      if (!isPlayingRef.current || isPausedRef.current) return;
       const elapsed = ctx.currentTime - startTime;
       if (elapsed >= total + 0.5) {
         stopPlayback();
+      } else {
+        playIntervalRef.current = setTimeout(checkPlaybackEnd, 500);
       }
-    }, 200);
+    };
+    playIntervalRef.current = setTimeout(checkPlaybackEnd, 500);
   }, [initAudio, stopPlayback, runScheduler]);
 
   const pausePlayback = useCallback(() => {
