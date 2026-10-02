@@ -1159,39 +1159,51 @@ export function useAudioEngine() {
           // WASM 路径：传 SF2 字节给 WASM worklet，等待 worklet 确认加载成功
           if (onProgress) onProgress({ stage: 'wasm-loading', percent: 50 });
 
-          // 复制一份再 transfer，避免主线程的 arrayBuffer 被 detach 后无法访问
           const sf2Copy = arrayBuffer.slice(0);
-          await new Promise((resolve, reject) => {
-            const handler = (e) => {
-              const msg = e.data;
-              if (msg.type === 'load-success') {
-                workletNodeRef.current.port.removeEventListener('message', handler);
-                resolve();
-              } else if (msg.type === 'load-error') {
-                workletNodeRef.current.port.removeEventListener('message', handler);
-                reject(new Error(msg.message || 'WASM SF2 load failed'));
-              }
-            };
-            workletNodeRef.current.port.addEventListener('message', handler);
-            workletNodeRef.current.port.postMessage({
-              type: 'load-sf2',
-              data: sf2Copy,
-            }, [sf2Copy]);
-            // 超时保护（30 秒）
-            setTimeout(() => {
-              workletNodeRef.current?.port.removeEventListener('message', handler);
-              reject(new Error('WASM SF2 load timeout (30s)'));
-            }, 30000);
-          }).catch(err => {
-            throw err;
-          });
+          try {
+            await new Promise((resolve, reject) => {
+              const handler = (e) => {
+                const msg = e.data;
+                if (msg.type === 'load-success') {
+                  workletNodeRef.current.port.removeEventListener('message', handler);
+                  resolve();
+                } else if (msg.type === 'load-error') {
+                  workletNodeRef.current.port.removeEventListener('message', handler);
+                  reject(new Error(msg.message || 'WASM SF2 load failed'));
+                }
+              };
+              workletNodeRef.current.port.addEventListener('message', handler);
+              workletNodeRef.current.port.postMessage({
+                type: 'load-sf2',
+                data: sf2Copy,
+              }, [sf2Copy]);
+              // 超时保护（30 秒）——超时后自动 fallback 到 JS 路径
+              setTimeout(() => {
+                workletNodeRef.current?.port.removeEventListener('message', handler);
+                reject(new Error('WASM SF2 load timeout (30s)'));
+              }, 30000);
+            });
 
-          if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
-          // WASM 模式不需要 sf2DataRef（rustysynth 内部管理）
-          sf2DataRef.current = null;
-          sf2PresetMapRef.current.clear();
-          setSoundSource('sf2');
-          return { success: true, name: 'SF2 (WASM)' };
+            if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
+            sf2DataRef.current = null;
+            sf2PresetMapRef.current.clear();
+            setSoundSource('sf2');
+            return { success: true, name: 'SF2 (WASM)' };
+          } catch (wasmErr) {
+            // WASM 失败时自动 fallback 到 JS 路径，不报错给用户
+            console.warn('[arvgrid] WASM SF2 load failed, falling back to JS:', wasmErr.message);
+            if (onProgress) onProgress({ stage: 'wasm-fallback', message: wasmErr.message });
+            // 重新加载 JS worklet（之前加载的是 WASM worklet）
+            const ctx = audioCtxRef.current;
+            if (ctx && noteBusRef.current) {
+              if (workletNodeRef.current) {
+                try { workletNodeRef.current.disconnect(); } catch(e) {}
+                workletNodeRef.current = null;
+              }
+              workletReadyRef.current = false;
+              await loadJsWorkletImpl(ctx, noteBusRef.current);
+            }
+          }
         }
 
         // JS 路径：用 Web Worker 解析

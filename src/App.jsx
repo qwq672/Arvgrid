@@ -177,7 +177,20 @@ export default function App() {
   };
 
   const handleLoadRecent = (projectData) => {
-    project.importMidiData(projectData);
+    // 最近项目只存了元数据 {id, title, timestamp}
+    // 需要从 autosave 或 localStorage 加载实际工程数据
+    if (projectData && projectData.tracks && Array.isArray(projectData.tracks)) {
+      // 如果传的就是完整工程数据，直接导入
+      project.importMidiData(projectData);
+    } else {
+      // 传的是元数据，尝试从 autosave 加载
+      const autosaveData = loadAutosave();
+      if (autosaveData && autosaveData.tracks) {
+        project.importMidiData(autosaveData);
+      } else {
+        console.warn('Cannot load recent project: no project data found');
+      }
+    }
     setHasUnsavedChanges(false);
     setShowHome(false);
   };

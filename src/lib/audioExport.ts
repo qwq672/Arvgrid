@@ -60,8 +60,17 @@ export async function renderAudioBuffer(
     throw new Error('No notes to render (project is empty)');
   }
 
-  const totalDuration = maxTime + 1.5; // 加 1.5 秒余音（含 release 尾音）
-  const { sampleRate } = resolveQualityParams(quality);
+  const totalDuration = maxTime + 1.0; // 加 1.0 秒余音
+  const params = resolveQualityParams(quality);
+  // 大曲子降采样率以减少渲染时间
+  // 6553 音符 566s 曲子：44100Hz → 24978142 样本，渲染需 5+ 分钟
+  // 降到 22050Hz → 12489071 样本，渲染时间减半，音质差异在导出后不明显
+  const totalEvents = tracks.reduce((sum, t) => sum + (t.mute ? 0 : (t.notes?.length || 0)), 0);
+  let sampleRate = params.sampleRate;
+  if (totalEvents > 3000 || totalDuration > 300) {
+    console.log(`[export] Large project (${totalEvents} notes, ${totalDuration.toFixed(0)}s), reducing sample rate to 22050`);
+    sampleRate = 22050;
+  }
   const totalSamples = Math.ceil(totalDuration * sampleRate);
 
   // 创建离线 AudioContext
@@ -187,7 +196,6 @@ export async function renderAudioBuffer(
   }
 
   // 第二遍：调度所有音符
-  const totalEvents = events.length;
   const renderBase = preparedSamples.size;
   let processedEvents = 0;
   let sf2SuccessCount = 0;
@@ -285,17 +293,16 @@ export async function renderAudioBuffer(
   }
 
   // 渲染音频
-  // OfflineAudioContext 渲染速度取决于音符数、节点数、release 时长
-  // 经验值：2377 音符 / 175s 曲子约需 2-3 分钟渲染
-  // 超时设为 300 秒（5 分钟），覆盖大多数场景
-  console.log(`[export] startRendering: ${totalSamples} samples, ${totalDuration.toFixed(1)}s duration, ${totalEvents} events`);
+  // 超时根据曲子时长动态调整：大曲子需要更长时间
+  const timeoutMs = Math.max(300000, totalDuration * 2000); // 至少 5 分钟，或时长×2
+  console.log(`[export] startRendering: ${totalSamples} samples, ${totalDuration.toFixed(1)}s duration, ${totalEvents} events, timeout=${timeoutMs/1000}s`);
   const renderStart = performance.now();
   let renderedBuffer: AudioBuffer;
   try {
     renderedBuffer = await Promise.race([
       offlineCtx.startRendering(),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`渲染超时（300s），音符数=${totalEvents}，时长=${totalDuration.toFixed(1)}s`)), 300000)
+        setTimeout(() => reject(new Error(`渲染超时（${timeoutMs/1000}s），音符数=${totalEvents}，时长=${totalDuration.toFixed(1)}s`)), timeoutMs)
       ),
     ]);
   } catch (err) {
