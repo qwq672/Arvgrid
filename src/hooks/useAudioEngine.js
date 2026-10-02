@@ -4,8 +4,9 @@ import { parseSF2 } from '../lib/sf2Parser';
 import { parseSF2WithWasm, isWasmSupported } from '../lib/wasmBackend';
 
 // 实验性 WASM 后端开关（从 localStorage 读取，默认关闭）
-const WASM_ENABLED = (typeof localStorage !== 'undefined') &&
-  localStorage.getItem('arvgrid_wasm_backend') === '1';
+// 当前 WASM 在 GitHub Pages + Cloudflare 自定义域名环境下无法 fetch（混合内容阻止）
+// 暂时强制关闭，避免用户遇到加载超时
+const WASM_ENABLED = false;
 
 // 前瞻调度器默认参数
 const MAX_POLYPHONY = 32; // 复音数上限（仅限主线程合成器路径）
@@ -117,7 +118,7 @@ export function useAudioEngine() {
   const loadJsWorkletImpl = useCallback(async (ctx, noteBus) => {
     try {
       // v7: 修复音符断裂 click 声——release 三次方衰减 + 记录进入时增益 + 默认 200ms
-      const workletUrl = new URL('worklets/sf2-processor.js?v=8', location.href).href;
+      const workletUrl = new URL('worklets/sf2-processor.js?v=9', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,
@@ -1385,9 +1386,9 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgre
       isInt16: true,
     }, [int16Copy.buffer]);
 
-    // 传输完成后释放主线程 pcmData（降低内存：100MB SF2 不再占用 800MB）
+    // 保留主线程 pcmData 供 audioExport.ts 离线渲染使用
+    // 之前设为 null 导致导出全部走 synth fallback
     for (let k = 0; k < entry.sampleObjs.length; k++) {
-      entry.sampleObjs[k].pcmData = null;
       entry.sampleObjs[k].workletSampleId = entry.id;
     }
 
