@@ -9,22 +9,35 @@
 // - 保留循环点 + 真实 ADSR 支持
 
 const _ATTACK_SAMPLES_DEFAULT = Math.floor(0.020 * sampleRate);
-const _RELEASE_SAMPLES_DEFAULT = Math.floor(0.200 * sampleRate);  // v7: 80ms → 200ms，消除 click 声
+const _RELEASE_SAMPLES_DEFAULT = Math.floor(0.200 * sampleRate);
 const _DRUM_MAX_SAMPLES = Math.floor(0.5 * sampleRate);
 const _INV_32768 = 1 / 32768;
 const _ENV_DONE_THRESHOLD = 0.0000001;
+
+// H8 修复：LFO 正弦查表，避免每样本 Math.sin 调用
+const _LFO_LUT_SIZE = 256;
+const _LFO_LUT = new Float32Array(_LFO_LUT_SIZE);
+for (let i = 0; i < _LFO_LUT_SIZE; i++) {
+  _LFO_LUT[i] = Math.sin(2 * Math.PI * i / _LFO_LUT_SIZE);
+}
+const _LFO_LUT_MASK = _LFO_LUT_SIZE - 1;
+
+// C4 修复：双缓冲数组，避免每帧创建新数组
+const _voicesA = [];
+const _voicesB = [];
 
 class SF2Processor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.samples = new Map();
-    this.voices = [];
+    this.voices = _voicesA;  // 用模块级双缓冲
     this.pendingVoices = [];
-    this.maxPolyphony = 64;  // v6: 128 → 64，减少 voice stealing 遍历
+    this.maxPolyphony = 64;
     this._voiceIdCounter = 0;
     this._fadeoutSamples = Math.floor(0.005 * sampleRate);
     this._fadeoutDecrement = 1 / this._fadeoutSamples;
     this._voicePool = [];
+    this._maxPoolSize = 128;  // H14 修复：pool 有上限
 
     this.port.onmessage = (e) => {
       const msg = e.data;
@@ -189,7 +202,8 @@ class SF2Processor extends AudioWorkletProcessor {
 
     // 1. 激活 pending voices
     if (this.pendingVoices.length > 0) {
-      const stillPending = [];
+      const stillPending = _voicesB;  // C4: 用模块级双缓冲
+      stillPending.length = 0;
       for (let i = 0; i < this.pendingVoices.length; i++) {
         const v = this.pendingVoices[i];
         if (v.startAtTime <= now + quantumDuration + 0.0001) {
@@ -218,13 +232,18 @@ class SF2Processor extends AudioWorkletProcessor {
           stillPending.push(v);
         }
       }
-      this.pendingVoices = stillPending;
+      this.pendingVoices = stillPending.length > 0 ? stillPending.slice() : _voicesA;
+      // 注意：stillPending 是 _voicesB 引用，需要复制给 pendingVoices
+      // 否则下次 process() 又用 _voicesB 会冲突
+      // 简化：直接用数组，因为 pendingVoices 不会在 process 中被遍历渲染
     }
 
     if (this.voices.length === 0) return true;
 
     // 2. 渲染所有活跃 voices
-    const remaining = [];
+    // C4: 用双缓冲数组替代每帧新建
+    const remaining = (this.voices === _voicesA) ? _voicesB : _voicesA;
+    remaining.length = 0;
     const voices = this.voices;
     const numVoices = voices.length;
 
@@ -339,8 +358,9 @@ class SF2Processor extends AudioWorkletProcessor {
               env = peak + (sustainLevel * peak - peak) * decayT;
             } else {
               // Sustain 阶段：加 LFO 颤音（3% 深度，5Hz）
-              // 增加生命力，消除"机械感"
-              const lfo = 1 + 0.03 * Math.sin(lfoPhase);
+              // H8 修复：用查表法替代 Math.sin，每秒减少 ~300 万次 sin 调用
+              const lfoIdx = (lfoPhase * _LFO_LUT_SIZE / (2 * Math.PI)) | 0;
+              const lfo = 1 + 0.03 * _LFO_LUT[lfoIdx & _LFO_LUT_MASK];
               env = sustainLevel * peak * lfo;
             }
           } else {
@@ -393,13 +413,21 @@ class SF2Processor extends AudioWorkletProcessor {
       } else {
         // 回收到对象池（消除 GC）
         voice.data = null;
-        pool.push(voice);
+        // H14 修复：pool 有上限，超出则丢弃让 GC 回收
+        if (pool.length < this._maxPoolSize) pool.push(voice);
       }
     }
 
     this.voices = remaining;
 
+    // H9 修复：限幅优化——先检查是否有超阈值样本，没有则跳过限幅循环
     // 透明软限幅：|s|<0.95 时完全线性无失真，>0.95 平滑趋近 ±1.0（永不硬削波）
+    let needClip = false;
+    for (let i = 0; i < blockSize; i++) {
+      if (out0[i] > 0.95 || out0[i] < -0.95) { needClip = true; break; }
+      if (stereo && (out1[i] > 0.95 || out1[i] < -0.95)) { needClip = true; break; }
+    }
+    if (needClip) {
     // 阈值从 0.9 提到 0.95，让大部分输出完全线性，避免在正常音量下产生压缩感
     // 主线程压缩器负责主要动态控制；此处仅作防爆音安全网
     // 曲线：s > 0.95 时趋近 0.95 + 0.05 = 1.0
@@ -425,6 +453,7 @@ class SF2Processor extends AudioWorkletProcessor {
         }
       }
     }
+    }  // 闭合 if (needClip)
 
     return true;
   }

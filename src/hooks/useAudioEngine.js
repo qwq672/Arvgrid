@@ -117,7 +117,7 @@ export function useAudioEngine() {
   const loadJsWorkletImpl = useCallback(async (ctx, noteBus) => {
     try {
       // v7: 修复音符断裂 click 声——release 三次方衰减 + 记录进入时增益 + 默认 200ms
-      const workletUrl = new URL('worklets/sf2-processor.js?v=7', location.href).href;
+      const workletUrl = new URL('worklets/sf2-processor.js?v=8', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,
@@ -261,7 +261,7 @@ export function useAudioEngine() {
     // v8: 根据 WASM_ENABLED 选择 JS worklet 或 WASM worklet
     if (WASM_ENABLED && isWasmSupported()) {
       try {
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=6', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=7', location.href).href;
         await ctx.audioWorklet.addModule(workletUrl);
         const workletNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
           numberOfInputs: 0,
