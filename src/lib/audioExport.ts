@@ -285,21 +285,20 @@ export async function renderAudioBuffer(
   }
 
   // 渲染音频
-  // 注意：startRendering 是同步阻塞调用，但返回 Promise
-  // 如果音符数过多或 release 时间过长，可能耗时较长
-  // 加 120 秒超时保护（比 30s 更宽松，避免大曲子误判超时）
-  console.log(`[export] startRendering: ${totalSamples} samples, ${totalDuration.toFixed(1)}s duration`);
+  // OfflineAudioContext 渲染速度取决于音符数、节点数、release 时长
+  // 经验值：2377 音符 / 175s 曲子约需 2-3 分钟渲染
+  // 超时设为 300 秒（5 分钟），覆盖大多数场景
+  console.log(`[export] startRendering: ${totalSamples} samples, ${totalDuration.toFixed(1)}s duration, ${totalEvents} events`);
   const renderStart = performance.now();
   let renderedBuffer: AudioBuffer;
   try {
     renderedBuffer = await Promise.race([
       offlineCtx.startRendering(),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`渲染超时（120s），音符数=${totalEvents}，时长=${totalDuration.toFixed(1)}s`)), 120000)
+        setTimeout(() => reject(new Error(`渲染超时（300s），音符数=${totalEvents}，时长=${totalDuration.toFixed(1)}s`)), 300000)
       ),
     ]);
   } catch (err) {
-    // 关闭 offlineCtx 释放资源
     try { (offlineCtx as any).close?.(); } catch {}
     throw err;
   }
@@ -356,8 +355,8 @@ function renderSF2Note(
     const holdSec = Math.max(0, Math.min(1.0, sample.holdSec || 0));
     const decaySec = Math.max(0, Math.min(2.0, sample.decaySec || 0));
     const sustainPerc = Math.max(0, Math.min(1, sample.sustainPerc ?? 1));
-    // release 限制在 2 秒内（导出路径），避免长尾音让渲染时间爆炸
-    const releaseSec = Math.max(0.02, Math.min(2.0, sample.releaseSec || 0.1));
+    // release 限制在 1 秒内（导出路径），避免长尾音让渲染时间爆炸
+    const releaseSec = Math.max(0.02, Math.min(1.0, sample.releaseSec || 0.1));
 
     // 用 linearRamp 替代 setTargetAtTime，减少自动化事件数
     gain.gain.setValueAtTime(0.0001, whenSec);
@@ -382,7 +381,7 @@ function renderSF2Note(
 
   source.start(whenSec);
   // 停止时间：note duration + release（限制 2 秒）+ 余量
-  const stopRelease = isDrum ? 0.2 : Math.min(2.0, sample.releaseSec || 0.1);
+  const stopRelease = isDrum ? 0.2 : Math.min(1.0, sample.releaseSec || 0.1);
   source.stop(whenSec + duration + stopRelease + 0.1);
 }
 

@@ -275,13 +275,14 @@ export function useAudioEngine() {
         console.log('[arvgrid] WASM SF2 worklet loaded');
 
         // 预加载 WASM 字节：主线程 fetch 后传给 worklet
-        // 避免 AudioWorklet 里 fetch 行为不一致导致超时
+        // 修复：用相对路径 fetch，避免 GitHub Pages 自定义域名 301 重定向到 http 导致混合内容阻止
         workletNode.port.addEventListener('message', async (e) => {
           if (e.data?.type === 'request-wasm-bytes') {
             try {
               console.log('[arvgrid] worklet requested wasm bytes, fetching...');
-              const wasmUrl = new URL('wasm/audio_core_bg.wasm', location.href);
-              const resp = await fetch(wasmUrl);
+              // 用相对路径：浏览器会跟随 301 重定向，且保持 https
+              // 之前用 new URL('wasm/...') 会产生绝对 URL，重定向到 http 导致混合内容阻止
+              const resp = await fetch('wasm/audio_core_bg.wasm');
               if (!resp.ok) {
                 throw new Error(`Failed to fetch wasm: ${resp.status}`);
               }
