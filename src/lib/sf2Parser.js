@@ -210,12 +210,11 @@ function createSampleObj(zone, pcmCache) {
     pcmData: pcmData,
     sampleRate: sampleRate,
     audioBuffer: null,
-    // 循环点：相对 PCM 数据起始的索引（绝对索引 = header.start + loopStart）
-    // 注意：pcmData 已是 zone.sample.data，其索引 0 对应 header.start
-    // 所以循环相对索引 = loopStart - header.start
+    // C1 修复：循环点已经是相对索引（soundfont2 库内部已减 header.start）
+    // 之前再减一次 header.start 导致双重扣除，循环点错位
     hasLoop: !!zone.hasLoop,
-    loopStart: zone.hasLoop ? Math.max(0, zone.loopStart - header.start) : 0,
-    loopEnd: zone.hasLoop ? Math.min(pcmData.length, zone.loopEnd - header.start) : 0,
+    loopStart: zone.hasLoop ? Math.max(0, zone.loopStart) : 0,
+    loopEnd: zone.hasLoop ? Math.min(pcmData.length, zone.loopEnd) : 0,
     // ADSR（秒）
     attackSec: zone.attackSec,
     holdSec: zone.holdSec,

@@ -789,6 +789,13 @@ export function useAudioEngine() {
         lastPerfLevelRef.current = level;
         setPerformanceInfo({ level, mem });
       }
+      // C5 修复：自适应复音数同步到 worklet
+      if (polyphonyChanged && workletReadyRef.current && workletNodeRef.current) {
+        workletNodeRef.current.port.postMessage({
+          type: 'set-polyphony',
+          value: adaptivePolyphonyRef.current,
+        });
+      }
     }
 
     // 清理已完成的节点组 - 原地修改避免 GC
@@ -1096,7 +1103,7 @@ export function useAudioEngine() {
     }
   }, []);
 
-  return useMemo(() => ({
+  const engine = useMemo(() => ({
     playNote,
     startPlayback: (tracks, bpm = 120) => startPlayback(tracks, bpm),
     stopPlayback,
@@ -1267,11 +1274,12 @@ export function useAudioEngine() {
     },
     startTimeRef,
     analyserNodeRef,
-    performanceInfo,
   }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback,
       isPlaying, isPaused, currentTime, totalDuration, getPlaybackTime, seekTo,
       reverbSend, delaySend, delayTime, delayFeedback, eqLow, eqMid, eqHigh, soundSource, metronomeOn,
-      bufferSize, performanceInfo, initAudio, setSoundSource, setBufferSize, masterVolume]);
+      bufferSize, initAudio, setSoundSource, setBufferSize, masterVolume]);
+  // H1 修复：performanceInfo 移出 useMemo deps，避免全 App re-render 链
+  return { ...engine, performanceInfo };
 }
 
 function noteToMidi(pitch) {
@@ -1372,19 +1380,28 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgre
     }
     if (length === 0) continue;
 
-    // 直接传输 Int16Array 副本（2字节/样本），worklet 内部用预乘 _INV_32768 转换
-    // 相比 Float32Array（4字节/样本）节省 50% worklet 内存，且零额外 CPU 开销
-    // v7: 传输后释放主线程 pcmData（设为 null），让 GC 回收，降低内存占用
-    // audioExport.ts 有合成器 fallback，pcmData 为 null 时自动用合成器渲染
-    const int16Copy = new Int16Array(pcmData);
-
-    workletNode.port.postMessage({
-      type: 'load-sample',
-      id: entry.id,
-      data: int16Copy,
-      sampleRate: entry.sampleRate,
-      isInt16: true,
-    }, [int16Copy.buffer]);
+    // C2 修复：大样本用结构化克隆（保留主线程 pcmData 供导出），小样本用 transfer
+    // 之前每次都 new Int16Array(pcmData) 复制 200MB+，内存峰值翻倍
+    if (pcmData.length > 5000000) {
+      // 大样本（>5M 样本 ≈ 10MB）：结构化克隆，worklet 拿到独立副本
+      // 主线程 pcmData 保留，audioExport.ts 可用
+      workletNode.port.postMessage({
+        type: 'load-sample',
+        id: entry.id,
+        data: pcmData,
+        sampleRate: entry.sampleRate,
+        isInt16: true,
+      });
+    } else {
+      // 小样本：transfer，零拷贝
+      workletNode.port.postMessage({
+        type: 'load-sample',
+        id: entry.id,
+        data: pcmData,
+        sampleRate: entry.sampleRate,
+        isInt16: true,
+      }, [pcmData.buffer]);
+    }
 
     // 保留主线程 pcmData 供 audioExport.ts 离线渲染使用
     // 之前设为 null 导致导出全部走 synth fallback

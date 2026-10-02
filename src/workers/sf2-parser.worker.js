@@ -23,14 +23,30 @@ self.onmessage = async (e) => {
     const sf2Data = parseSF2(arrayBuffer);
     const parseMs = Math.round(performance.now() - t0);
 
-    // 不传 transferList，使用默认结构化克隆
-    // 结构化克隆会复制每个 Int16Array，主线程拿到的是全新独立副本
-    // 性能损耗：400MB SF2 大约多 100-200ms，但保证数据可用
+    // H5 修复：收集所有 unique pcmData buffer 作为 transferList
+    // transfer 后 worker 内的副本自动 detached，主线程拿到原 buffer
+    // 避免结构化克隆复制 200MB+ pcmData
+    const transferList = [];
+    const seen = new Set();
+    if (sf2Data && sf2Data.presets) {
+      for (const preset of sf2Data.presets) {
+        if (!preset.sampleIndex) continue;
+        for (let m = 0; m < 128; m++) {
+          const sampleObj = preset.sampleIndex[m];
+          if (!sampleObj || !sampleObj.pcmData) continue;
+          if (!seen.has(sampleObj.pcmData)) {
+            seen.add(sampleObj.pcmData);
+            transferList.push(sampleObj.pcmData.buffer);
+          }
+        }
+      }
+    }
+
     self.postMessage({
       type: 'parse-success',
       sf2Data,
       parseMs,
-    });
+    }, transferList);
   } catch (err) {
     self.postMessage({
       type: 'parse-error',
