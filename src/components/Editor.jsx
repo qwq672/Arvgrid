@@ -159,11 +159,31 @@ const Editor = memo(({
         onQuantizeValueChange={setQuantizeValue}
         onOpenAbout={handleOnOpenAbout}
         performanceInfo={audioEngine.performanceInfo}
-        // 感叹号指示器：有非默认效果设置时显示
-        hasEffectsWarning={
-          (reverbSend !== 0.08) || (delaySend !== 0.1) ||
-          (eqLow !== 0) || (eqMid !== 0) || (eqHigh !== 0)
-        }
+        // 感叹号指示器：传具体改动的效果列表，感叹号只显示实际改动的
+        effectsWarnings={() => {
+          const warnings = [];
+          if (eqLow !== 0 || eqMid !== 0 || eqHigh !== 0) {
+            warnings.push(lang === 'zh' ? '全局均衡器 (EQ)' : lang === 'ja' ? 'グローバル EQ' : lang === 'ko' ? '글로벌 EQ' : 'Global EQ');
+          }
+          if (reverbSend !== 0.08) {
+            warnings.push(lang === 'zh' ? '全局混响 (Reverb)' : lang === 'ja' ? 'グローバル リバーブ' : lang === 'ko' ? '글로벌 리버브' : 'Global Reverb');
+          }
+          if (delaySend !== 0.1 || delayTime !== 0.3 || delayFeedback !== 0.2) {
+            warnings.push(lang === 'zh' ? '全局延迟 (Delay)' : lang === 'ja' ? 'グローバル ディレイ' : lang === 'ko' ? '글로벌 딜레이' : 'Global Delay');
+          }
+          // 检查单音轨效果器
+          for (const t of tracks) {
+            if (t.effects) {
+              const hasFx = t.effects.eqLow !== 0 || t.effects.eqMid !== 0 || t.effects.eqHigh !== 0 ||
+                t.effects.reverbSend !== 0 || t.effects.delaySend !== 0 || t.effects.spatial !== 0;
+              if (hasFx) {
+                warnings.push(lang === 'zh' ? '单音轨效果器' : lang === 'ja' ? 'トラック個別エフェクト' : lang === 'ko' ? '트랙 개별 이펙터' : 'Per-track Effects');
+                break;
+              }
+            }
+          }
+          return warnings;
+        }}
       />
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 6, gap: 6, minHeight: 0 }}>
         <button

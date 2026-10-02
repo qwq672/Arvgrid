@@ -364,11 +364,11 @@ export default function TrackPanel({
         </div>
       )}
 
-      {/* 乐器选择侧栏 */}
+      {/* 音色选择窗口（居中弹窗） */}
       {instPanel !== null && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex' }}>
-          <div style={{ flex: 1, background: 'rgba(0,0,0,0.5)' }} onClick={closeInstPanel} />
-          <div style={{ width: 280, maxWidth: '90vw', height: '100%', background: 'var(--panel)', borderLeft: '1px solid var(--border)', display: 'flex', flexDirection: 'column', boxShadow: '-4px 0 20px rgba(0,0,0,0.5)' }}>
+        <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)' }} onClick={closeInstPanel} />
+          <div style={{ position: 'relative', width: 'min(360px, 90vw)', maxHeight: '80vh', background: 'var(--panel)', borderRadius: 12, border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
               <span style={{ flex: 1, fontSize: '0.9rem' }}>{t.instrument}</span>
               <button onClick={closeInstPanel} style={{ background: 'none', padding: 4 }}><Icons.Close /></button>

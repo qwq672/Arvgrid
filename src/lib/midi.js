@@ -206,7 +206,7 @@ export async function parseMidiFile(arrayBuffer) {
   // 第二遍：按 channel 分组音符，应用 program change
   // 每个 MIDI track 可能包含多个 channel，每个 channel 有不同的乐器
   // MIDI channel 10 (0-indexed: 9) 是标准鼓组通道
-  const channelTracks = new Map(); // key: `${trackIdx}_${channel}`, value: { name, program, notes, isDrum }
+  const channelTracks = new Map(); // key: `${trackIdx}_${channel}`, value: { name, program, notes, isDrum, channel }
 
   for (let t = 0; t < trackEvents.length; t++) {
     const { name, events } = trackEvents[t];
@@ -237,6 +237,7 @@ export async function parseMidiFile(arrayBuffer) {
                   name: name || (isDrum ? 'Drums' : getInstrumentName(prog)),
                   program: prog,
                   isDrum,
+                  channel: ev.channel,
                   notes: [],
                 });
               }
@@ -265,6 +266,7 @@ export async function parseMidiFile(arrayBuffer) {
                 name: name || (isDrum ? 'Drums' : getInstrumentName(prog)),
                 program: prog,
                 isDrum,
+                channel: ev.channel,
                 notes: [],
               });
             }
@@ -296,6 +298,7 @@ export async function parseMidiFile(arrayBuffer) {
             name: name || (isDrum ? 'Drums' : getInstrumentName(prog)),
             program: prog,
             isDrum,
+            channel: channel,
             notes: [],
           });
         }
@@ -356,10 +359,26 @@ export function generateMidiFile(tracks, bpm, meta = {}) {
   }
 
   // 每个轨道的事件
+  // 鼓组强制 channel 9，旋律轨道优先复用原 channel，否则动态分配
+  const usedChannels = new Set();
   tracks.forEach((track, idx) => {
-    const channel = idx % 16;
-    // 程序号
-    events.push({ tick: 0, type: 'program', channel, program: track.program });
+    let channel;
+    if (track.isDrum) {
+      channel = 9;  // GM 鼓组强制 channel 9
+    } else if (track.channel != null && track.channel !== 9 && !usedChannels.has(track.channel)) {
+      channel = track.channel;  // 复用原始 channel
+    } else {
+      // 动态分配空闲 channel（跳过 9）
+      channel = 0;
+      while (channel === 9 || usedChannels.has(channel)) channel++;
+      if (channel >= 16) channel = idx % 16;  // fallback
+    }
+    usedChannels.add(channel);
+
+    // 程序号（鼓组不写 program change）
+    if (!track.isDrum) {
+      events.push({ tick: 0, type: 'program', channel, program: Math.max(0, Math.min(127, track.program || 0)) });
+    }
     if (track.name) {
       events.push({
         tick: 0,
@@ -371,17 +390,19 @@ export function generateMidiFile(tracks, bpm, meta = {}) {
     // 音符
     track.notes.forEach(n => {
       const startTick = Math.round(n.startSec * (bpm / 60) * ticksPerBeat);
-      const durTick = Math.round(n.durationSec * (bpm / 60) * ticksPerBeat);
+      const durTick = Math.max(1, Math.round(n.durationSec * (bpm / 60) * ticksPerBeat));
       const pitch = noteToMidi(n.pitch);
-      events.push({ tick: startTick, type: 'noteOn', channel, pitch, velocity: n.velocity });
+      // velocity 钳制到 1-127（0 会被误认为 Note Off）
+      const velocity = Math.max(1, Math.min(127, Math.round(n.velocity) || 64));
+      events.push({ tick: startTick, type: 'noteOn', channel, pitch, velocity });
       events.push({ tick: startTick + durTick, type: 'noteOff', channel, pitch, velocity: 0 });
     });
   });
 
-  // 按 tick 排序
-  events.sort((a, b) => a.tick - b.tick);
+  // 按 tick 排序，同 tick 时 noteOff 排在 noteOn 前面（避免 legato 场景音符丢失）
+  const eventOrder = { program: 0, meta: 1, tempo: 1, noteOff: 2, noteOn: 3, end: 9 };
+  events.sort((a, b) => a.tick - b.tick || (eventOrder[a.type] || 0) - (eventOrder[b.type] || 0));
   const maxTick = events.length ? events[events.length - 1].tick : 0;
-  events.push({ tick: maxTick, type: 'end' });
 
   // 变长编码函数
   function writeVarLen(val) {
@@ -419,16 +440,17 @@ export function generateMidiFile(tracks, bpm, meta = {}) {
 
       if (ev.type === 'tempo') {
         buffer.push(0xFF, 0x51, 0x03);
-        const t = ev.tempo;
+        const t = Math.min(0xFFFFFF, Math.round(ev.tempo));  // 精度修复：Math.round 替代位运算截断
         buffer.push((t >> 16) & 0xFF, (t >> 8) & 0xFF, t & 0xFF);
       } else if (ev.type === 'meta') {
-        buffer.push(0xFF, ev.metaType, ev.data.length, ...ev.data);
+        // meta 长度用 VLQ 编码（修复 >127 字节 meta 损坏）
+        buffer.push(0xFF, ev.metaType, ...writeVarLen(ev.data.length), ...ev.data);
       } else if (ev.type === 'program') {
-        buffer.push(0xC0 | ev.channel, ev.program);
+        buffer.push(0xC0 | ev.channel, Math.max(0, Math.min(127, ev.program)));
       } else if (ev.type === 'noteOn') {
-        buffer.push(0x90 | ev.channel, ev.pitch, ev.velocity);
+        buffer.push(0x90 | ev.channel, Math.max(0, Math.min(127, ev.pitch)), Math.max(1, Math.min(127, ev.velocity)));
       } else if (ev.type === 'noteOff') {
-        buffer.push(0x80 | ev.channel, ev.pitch, 0);
+        buffer.push(0x80 | ev.channel, Math.max(0, Math.min(127, ev.pitch)), 0);
       }
     }
     buffer.push(0xFF, 0x2F, 0x00);  // 轨道结束
