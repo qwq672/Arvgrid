@@ -1,15 +1,10 @@
 // SF2 解析 Web Worker
 // 把 parseSF2 移出主线程，避免加载大 SF2 文件时冻结 UI
-// 解析完成后返回结构化的 sampleIndex/preset 数据，主线程无需再次处理
-//
-// 注意：此 worker 通过 Vite 的 `new Worker(new URL(...), { type: 'module' })` 加载
-// 构建时会被自动 chunk 化，运行时是纯本地后台线程，不依赖任何服务器
-//
-// ⚠️ 不使用 transferable：sf2Parser 的 createSampleObj 通过 pcmCache 让多个 sampleObj 共享
-// 同一 pcmData（Int16Array）。postMessage 结构化克隆时不保留共享关系，
-// 会导致多个 sampleObj.pcmData 指向不同的 Int16Array 副本，但 transferList 只 transfer 一份，
-// 其余指向 detached buffer，主线程访问时报错 "Cannot perform Construct on a detached ArrayBuffer"。
-// 改为结构化克隆（默认行为），让浏览器内部高效复制 Int16Array，确保所有引用都可用。
+
+// Polyfill: soundfont2 库 UMD 格式使用 window，worker 里不存在
+if (typeof window === 'undefined' && typeof self !== 'undefined') {
+  globalThis.window = self;
+}
 
 import { parseSF2 } from '../lib/sf2Parser';
 
@@ -19,13 +14,10 @@ self.onmessage = async (e) => {
 
   try {
     const t0 = performance.now();
-    // 在 worker 里调用 parseSF2（不在主线程跑，UI 不冻结）
     const sf2Data = parseSF2(arrayBuffer);
     const parseMs = Math.round(performance.now() - t0);
 
-    // H5 修复：收集所有 unique pcmData buffer 作为 transferList
-    // transfer 后 worker 内的副本自动 detached，主线程拿到原 buffer
-    // 避免结构化克隆复制 200MB+ pcmData
+    // H5: 收集所有 unique pcmData buffer 作为 transferList
     const transferList = [];
     const seen = new Set();
     if (sf2Data && sf2Data.presets) {
@@ -42,11 +34,7 @@ self.onmessage = async (e) => {
       }
     }
 
-    self.postMessage({
-      type: 'parse-success',
-      sf2Data,
-      parseMs,
-    }, transferList);
+    self.postMessage({ type: 'parse-success', sf2Data, parseMs }, transferList);
   } catch (err) {
     self.postMessage({
       type: 'parse-error',
@@ -55,4 +43,3 @@ self.onmessage = async (e) => {
     });
   }
 };
-

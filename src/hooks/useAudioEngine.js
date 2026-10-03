@@ -257,11 +257,11 @@ export function useAudioEngine() {
     noteBusRef.current = noteBus;
 
     // 注册 SF2 AudioWorklet
-    // WASM 优先（rustysynth 完整 SF2 引擎，3-5× 性能），失败自动 fallback 到 JS worklet
+    // WASM 优先（rustysynth 完整 SF2 引擎），失败自动 fallback 到 JS worklet
     if (WASM_ENABLED && isWasmSupported()) {
       try {
         console.log('[arvgrid WASM] Step 1: loading wasm-sf2-processor.js module...');
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=8', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=9', location.href).href;
         console.log('[arvgrid WASM] worklet URL:', workletUrl);
         await ctx.audioWorklet.addModule(workletUrl);
         console.log('[arvgrid WASM] Step 2: module loaded, creating AudioWorkletNode...');
@@ -275,62 +275,74 @@ export function useAudioEngine() {
         workletNodeRef.current = workletNode;
         workletReadyRef.current = true;
         workletBackendRef.current = 'wasm';
-        console.log('[arvgrid WASM] Step 3: AudioWorkletNode created, waiting for WASM bytes request...');
+        console.log('[arvgrid WASM] Step 3: AudioWorkletNode created');
 
-        // 主线程监听 worklet 的 WASM 字节请求
-        // worklet 不能自己 fetch（AudioWorkletGlobalScope 限制 + 混合内容问题）
-        // 所以 worklet 发 'request-wasm-bytes'，主线程 fetch 后传回
-        let wasmBytesSent = false;
-        workletNode.port.addEventListener('message', async (e) => {
-          if (e.data?.type === 'request-wasm-bytes' && !wasmBytesSent) {
-            wasmBytesSent = true;
-            console.log('[arvgrid WASM] Step 4: worklet requested WASM bytes');
-            console.log('[arvgrid WASM] Step 5: fetching wasm/audio_core_bg.wasm...');
+        // 主动预加载 WASM 字节并推送给 worklet
+        // 不等 worklet 请求（request-response 在 Cloudflare Rocket Loader 下消息丢失）
+        // 直接 fetch → 推送，消除竞态条件
+        console.log('[arvgrid WASM] Step 4: proactively fetching WASM bytes...');
+        const wasmPaths = [
+          'wasm/audio_core_bg.wasm',
+          './wasm/audio_core_bg.wasm',
+          new URL('wasm/audio_core_bg.wasm', location.href).href,
+        ];
 
-            // 尝试多种路径加载 WASM，解决 GitHub Pages 自定义域名重定向问题
-            const wasmPaths = [
-              'wasm/audio_core_bg.wasm',           // 相对路径（首选）
-              './wasm/audio_core_bg.wasm',          // 显式相对
-              new URL('wasm/audio_core_bg.wasm', location.href).href,  // 绝对路径
-            ];
-
-            let wasmBytes = null;
-            let lastError = null;
-            for (let i = 0; i < wasmPaths.length; i++) {
-              const path = wasmPaths[i];
-              try {
-                console.log(`[arvgrid WASM] Step 5.${i+1}: trying path: ${path}`);
-                const resp = await fetch(path, { redirect: 'follow', mode: 'cors' });
-                if (!resp.ok) {
-                  console.warn(`[arvgrid WASM] path ${i+1} failed: HTTP ${resp.status}`);
-                  lastError = new Error(`HTTP ${resp.status}`);
-                  continue;
-                }
-                wasmBytes = await resp.arrayBuffer();
-                console.log(`[arvgrid WASM] Step 5.${i+1} success: ${wasmBytes.byteLength} bytes`);
-                break;
-              } catch (err) {
-                console.warn(`[arvgrid WASM] path ${i+1} error:`, err.message);
-                lastError = err;
-              }
+        let wasmBytes = null;
+        let lastError = null;
+        for (let i = 0; i < wasmPaths.length; i++) {
+          const path = wasmPaths[i];
+          try {
+            console.log(`[arvgrid WASM] Step 4.${i+1}: trying path: ${path}`);
+            const resp = await fetch(path, { redirect: 'follow' });
+            if (!resp.ok) {
+              console.warn(`[arvgrid WASM] path ${i+1} failed: HTTP ${resp.status}`);
+              lastError = new Error(`HTTP ${resp.status}`);
+              continue;
             }
-
-            if (!wasmBytes) {
-              console.error('[arvgrid WASM] All fetch attempts failed, last error:', lastError?.message);
-              workletNode.port.postMessage({ type: 'init-wasm-bytes', error: lastError?.message || 'All fetch attempts failed' });
-              return;
-            }
-
-            console.log('[arvgrid WASM] Step 6: sending WASM bytes to worklet...');
-            workletNode.port.postMessage({
-              type: 'init-wasm-bytes',
-              wasmBytes,
-            }, [wasmBytes]);
-            console.log('[arvgrid WASM] Step 6 done: bytes sent');
+            wasmBytes = await resp.arrayBuffer();
+            console.log(`[arvgrid WASM] Step 4.${i+1} success: ${wasmBytes.byteLength} bytes`);
+            break;
+          } catch (err) {
+            console.warn(`[arvgrid WASM] path ${i+1} error:`, err.message);
+            lastError = err;
           }
+        }
+
+        if (!wasmBytes) {
+          console.error('[arvgrid WASM] All fetch attempts failed:', lastError?.message);
+          throw new Error('WASM fetch failed: ' + (lastError?.message || 'unknown'));
+        }
+
+        console.log('[arvgrid WASM] Step 5: sending WASM bytes to worklet...');
+        workletNode.port.postMessage({
+          type: 'init-wasm-bytes',
+          wasmBytes,
+        }, [wasmBytes]);
+        console.log('[arvgrid WASM] Step 5 done: WASM bytes sent to worklet');
+
+        // 等待 worklet 确认 WASM 初始化完成
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            console.error('[arvgrid WASM] Step 6 timeout: worklet did not confirm WASM init');
+            reject(new Error('WASM init timeout'));
+          }, 10000);
+          const handler = (e) => {
+            if (e.data?.type === 'wasm-ready' || e.data?.type === 'processor-ready') {
+              console.log('[arvgrid WASM] Step 6: worklet confirmed ready');
+              clearTimeout(timeout);
+              workletNode.port.removeEventListener('message', handler);
+              resolve();
+            } else if (e.data?.type === 'init-error') {
+              console.error('[arvgrid WASM] Step 6: worklet init error:', e.data.message);
+              clearTimeout(timeout);
+              workletNode.port.removeEventListener('message', handler);
+              reject(new Error(e.data.message));
+            }
+          };
+          workletNode.port.addEventListener('message', handler);
         });
 
-        console.log('[arvgrid WASM] Step 3 done: listener registered, waiting for worklet to request bytes...');
+        console.log('[arvgrid WASM] WASM backend fully initialized');
       } catch (err) {
         console.warn('[arvgrid WASM] Failed to init, falling back to JS worklet:', err);
         await loadJsWorkletImpl(ctx, noteBus);
