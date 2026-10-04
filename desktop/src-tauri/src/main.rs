@@ -43,11 +43,12 @@ async fn load_sf2(
     // 重新创建音频流
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or("No audio device")?;
-    let config = device.default_output_config().map_err(|e| e.to_string())?;
-    let stream_config: StreamConfig = config.into();
+    let supported_config = device.default_output_config().map_err(|e| e.to_string())?;
+    let sample_format = supported_config.sample_format();
+    let stream_config: StreamConfig = supported_config.into();
     let core_clone = state.core.clone();
 
-    let stream = match config.sample_format() {
+    let stream = match sample_format {
         SampleFormat::F32 => {
             device.build_output_stream(
                 &stream_config,
@@ -145,11 +146,12 @@ fn main() {
             match device.default_output_config() {
                 Ok(config) => {
                     let sr = config.sample_rate().0;
+                    let sample_format = config.sample_format();
                     let stream_config: StreamConfig = config.into();
-                    eprintln!("[arvgrid] Audio: {}Hz, {}ch", sr, stream_config.channels);
+                    eprintln!("[arvgrid] Audio: {}Hz, {}ch, {:?}", sr, stream_config.channels, sample_format);
 
                     // 初始静音流
-                    let stream = match config.sample_format() {
+                    let stream = match sample_format {
                         SampleFormat::F32 => {
                             device.build_output_stream(
                                 &stream_config,
@@ -160,7 +162,10 @@ fn main() {
                                 None,
                             )
                         }
-                        _ => return eprintln!("[arvgrid] Only F32 supported"),
+                        _ => {
+                            eprintln!("[arvgrid] Only F32 supported");
+                            return;
+                        }
                     };
 
                     let stream = match stream {
