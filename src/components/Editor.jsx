@@ -306,6 +306,19 @@ const Editor = memo(({
         sf2Name={sf2Name}
         bufferSize={audioEngine.bufferSize}
         onBufferSizeChange={audioEngine.setBufferSize}
+        // 全局效果器
+        eqLow={eqLow} onEqLowChange={setEqLow}
+        eqMid={eqMid} onEqMidChange={setEqMid}
+        eqHigh={eqHigh} onEqHighChange={setEqHigh}
+        compressorThreshold={compressorThreshold} onCompressorThresholdChange={setCompressorThreshold}
+        compressorRatio={compressorRatio} onCompressorRatioChange={setCompressorRatio}
+        chorusAmount={chorusAmount} onChorusAmountChange={setChorusAmount}
+        stereoWidth={stereoWidth} onStereoWidthChange={setStereoWidth}
+        reverbSend={reverbSend} onReverbSendChange={setReverbSend}
+        delaySend={delaySend} onDelaySendChange={setDelaySend}
+        delayTime={delayTime} onDelayTimeChange={setDelayTime}
+        delayFeedback={delayFeedback} onDelayFeedbackChange={setDelayFeedback}
+        audioCtxRef={audioEngine.audioCtxRef}
       />
       <MidiInfoModal
         open={midiInfoOpen}

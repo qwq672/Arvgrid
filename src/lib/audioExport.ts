@@ -62,15 +62,10 @@ export async function renderAudioBuffer(
 
   const totalDuration = maxTime + 1.0; // 加 1.0 秒余音
   const params = resolveQualityParams(quality);
-  // 大曲子降采样率以减少渲染时间
-  // 6553 音符 566s 曲子：44100Hz → 24978142 样本，渲染需 5+ 分钟
-  // 降到 22050Hz → 12489071 样本，渲染时间减半，音质差异在导出后不明显
+  // 不再降采样：大曲子也用原始采样率导出
+  // 降采样到 22050Hz 会导致高频丢失，音质明显下降
+  const sampleRate = params.sampleRate;
   const totalEvents = tracks.reduce((sum, t) => sum + (t.mute ? 0 : (t.notes?.length || 0)), 0);
-  let sampleRate = params.sampleRate;
-  if (totalEvents > 3000 || totalDuration > 300) {
-    console.log(`[export] Large project (${totalEvents} notes, ${totalDuration.toFixed(0)}s), reducing sample rate to 22050`);
-    sampleRate = 22050;
-  }
   const totalSamples = Math.ceil(totalDuration * sampleRate);
 
   // 创建离线 AudioContext
@@ -293,9 +288,10 @@ export async function renderAudioBuffer(
   }
 
   // 渲染音频
-  // 超时根据曲子时长动态调整：大曲子需要更长时间
-  const timeoutMs = Math.max(300000, totalDuration * 2000); // 至少 5 分钟，或时长×2
-  console.log(`[export] startRendering: ${totalSamples} samples, ${totalDuration.toFixed(1)}s duration, ${totalEvents} events, timeout=${timeoutMs/1000}s`);
+  // 超时：按曲子时长 ×5 计算（足够覆盖 OfflineAudioContext 渲染）
+  // 5分钟曲子 → 25分钟超时；10分钟曲子 → 50分钟超时
+  const timeoutMs = Math.max(600000, totalDuration * 5000);
+  console.log(`[export] startRendering: ${totalSamples} samples, ${totalDuration.toFixed(1)}s, ${totalEvents} events, timeout=${(timeoutMs/1000).toFixed(0)}s`);
   const renderStart = performance.now();
   let renderedBuffer: AudioBuffer;
   try {

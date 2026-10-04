@@ -12,6 +12,13 @@ export default function SettingsPanel({
   lang, onLangChange,
   onLoadSF2, sf2Loaded, sf2Name,
   bufferSize, onBufferSizeChange,
+  // 全局效果器
+  eqLow, onEqLowChange, eqMid, onEqMidChange, eqHigh, onEqHighChange,
+  compressorThreshold, onCompressorThresholdChange, compressorRatio, onCompressorRatioChange,
+  chorusAmount, onChorusAmountChange, stereoWidth, onStereoWidthChange,
+  reverbSend, onReverbSendChange, delaySend, onDelaySendChange,
+  delayTime, onDelayTimeChange, delayFeedback, onDelayFeedbackChange,
+  audioCtxRef,  // 音频上下文引用（用于输出设备选择）
 }) {
   const fileInputRef = useRef(null);
   const [search, setSearch] = useState('');
@@ -184,11 +191,131 @@ export default function SettingsPanel({
             </div>
           )}
 
+          {/* 全局效果器面板 */}
+          {matchSearch(lang === 'zh' ? '效果器' : 'Effects') && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 8, fontWeight: 600 }}>
+                {lang === 'zh' ? '全局效果器' : lang === 'ja' ? 'グローバルエフェクト' : lang === 'ko' ? '글로벌 이펙터' : 'Global Effects'}
+              </label>
+
+              {/* EQ */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>{lang === 'zh' ? '均衡器 (EQ)' : 'Equalizer (EQ)'}</div>
+                {[
+                  { label: lang === 'zh' ? '低音' : 'Low', val: eqLow, set: onEqLowChange, min: -12, max: 12, fmt: v => `${v.toFixed(1)} dB` },
+                  { label: lang === 'zh' ? '中音' : 'Mid', val: eqMid, set: onEqMidChange, min: -12, max: 12, fmt: v => `${v.toFixed(1)} dB` },
+                  { label: lang === 'zh' ? '高音' : 'High', val: eqHigh, set: onEqHighChange, min: -12, max: 12, fmt: v => `${v.toFixed(1)} dB` },
+                ].map(item => (
+                  <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ width: 40, fontSize: '0.7rem' }}>{item.label}</span>
+                    <input type="range" min={item.min} max={item.max} step="0.5" value={item.val} onChange={e => item.set && item.set(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                    <span style={{ width: 50, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{item.fmt(item.val)}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 压缩器 */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>{lang === 'zh' ? '压缩器 (Compressor)' : 'Compressor'}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '阈值' : 'Thresh'}</span>
+                  <input type="range" min="-60" max="0" step="1" value={compressorThreshold} onChange={e => onCompressorThresholdChange && onCompressorThresholdChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{compressorThreshold} dB</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '比率' : 'Ratio'}</span>
+                  <input type="range" min="1" max="20" step="1" value={compressorRatio} onChange={e => onCompressorRatioChange && onCompressorRatioChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{compressorRatio}:1</span>
+                </div>
+              </div>
+
+              {/* 混响 */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>{lang === 'zh' ? '混响 (Reverb)' : 'Reverb'}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '发送量' : 'Send'}</span>
+                  <input type="range" min="0" max="1" step="0.01" value={reverbSend} onChange={e => onReverbSendChange && onReverbSendChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{Math.round(reverbSend * 100)}%</span>
+                </div>
+              </div>
+
+              {/* 延迟 */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>{lang === 'zh' ? '延迟 (Delay)' : 'Delay'}</div>
+                {[
+                  { label: lang === 'zh' ? '发送' : 'Send', val: delaySend, set: onDelaySendChange, min: 0, max: 1, step: 0.01, fmt: v => `${Math.round(v*100)}%` },
+                  { label: lang === 'zh' ? '时间' : 'Time', val: delayTime, set: onDelayTimeChange, min: 0.05, max: 1, step: 0.01, fmt: v => `${v.toFixed(2)}s` },
+                  { label: lang === 'zh' ? '反馈' : 'FB', val: delayFeedback, set: onDelayFeedbackChange, min: 0, max: 0.9, step: 0.01, fmt: v => `${Math.round(v*100)}%` },
+                ].map(item => (
+                  <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ width: 50, fontSize: '0.7rem' }}>{item.label}</span>
+                    <input type="range" min={item.min} max={item.max} step={item.step} value={item.val} onChange={e => item.set && item.set(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                    <span style={{ width: 50, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{item.fmt(item.val)}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 合唱 + 声场 */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>{lang === 'zh' ? '合唱与声场' : 'Chorus & Stereo'}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '合唱' : 'Chorus'}</span>
+                  <input type="range" min="0" max="1" step="0.01" value={chorusAmount} onChange={e => onChorusAmountChange && onChorusAmountChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{Math.round(chorusAmount * 100)}%</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '声场' : 'Width'}</span>
+                  <input type="range" min="0" max="2" step="0.05" value={stereoWidth} onChange={e => onStereoWidthChange && onStereoWidthChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{stereoWidth.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {matchSearch(lang === 'zh' ? '音频输出' : 'Audio Output') && (
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
                 {lang === 'zh' ? '音频输出设置' : 'Audio Output Settings'}
               </label>
+              {/* 输出设备选择 */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '输出设备' : 'Device'}</span>
+                <select id="audio-output-device" style={{ flex: 1, fontSize: '0.72rem' }} onChange={async (e) => {
+                  const deviceId = e.target.value;
+                  if (deviceId && audioCtxRef) {
+                    try {
+                      const device = await navigator.mediaDevices.selectAudioOutput({ deviceId });
+                      if (device && audioCtxRef.current) {
+                        audioCtxRef.current.setSinkId(deviceId);
+                      }
+                    } catch (err) {
+                      console.warn('Failed to set audio output device:', err);
+                    }
+                  }
+                }}>
+                  <option value="">{lang === 'zh' ? '默认设备' : 'Default'}</option>
+                </select>
+                <button onClick={async () => {
+                  try {
+                    const device = await navigator.mediaDevices.selectAudioOutput();
+                    const sel = document.getElementById('audio-output-device');
+                    if (sel) {
+                      const opt = document.createElement('option');
+                      opt.value = device.deviceId;
+                      opt.text = device.label || 'Device';
+                      sel.appendChild(opt);
+                      sel.value = device.deviceId;
+                      if (audioCtxRef && audioCtxRef.current) {
+                        audioCtxRef.current.setSinkId(device.deviceId);
+                      }
+                    }
+                  } catch (err) {
+                    console.warn('Device selection failed:', err);
+                  }
+                }} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>
+                  {lang === 'zh' ? '选择...' : 'Choose...'}
+                </button>
+              </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '采样率' : 'Sample Rate'}</span>
                 <select

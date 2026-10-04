@@ -188,23 +188,6 @@ export default function Transport({
         <input type="range" min="0.05" max="1" step="0.01" value={delayTime} onChange={(e) => onDelayTimeChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
         <span style={{ fontSize: '0.7rem' }}>{t.delayFeedback}</span>
         <input type="range" min="0" max="0.9" step="0.01" value={delayFeedback} onChange={(e) => onDelayFeedbackChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
-        {/* EQ 3 段均衡器 */}
-        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '低音' : 'Low'}</span>
-        <input type="range" min="-12" max="12" step="0.5" value={eqLow} onChange={(e) => onEqLowChange && onEqLowChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
-        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '中音' : 'Mid'}</span>
-        <input type="range" min="-12" max="12" step="0.5" value={eqMid} onChange={(e) => onEqMidChange && onEqMidChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
-        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '高音' : 'High'}</span>
-        <input type="range" min="-12" max="12" step="0.5" value={eqHigh} onChange={(e) => onEqHighChange && onEqHighChange(parseFloat(e.target.value))} style={{ width: '50px' }} />
-        {/* 压缩器 */}
-        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '压限' : 'Comp'}</span>
-        <input type="range" min="-60" max="0" step="1" value={compressorThreshold} onChange={(e) => onCompressorThresholdChange && onCompressorThresholdChange(parseFloat(e.target.value))} style={{ width: '50px' }} title={lang === 'zh' ? '压缩器阈值 (dB)' : 'Compressor threshold (dB)'} />
-        <input type="range" min="1" max="20" step="1" value={compressorRatio} onChange={(e) => onCompressorRatioChange && onCompressorRatioChange(parseFloat(e.target.value))} style={{ width: '40px' }} title={lang === 'zh' ? '压缩比' : 'Ratio'} />
-        {/* 合唱 */}
-        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '合唱' : 'Chor'}</span>
-        <input type="range" min="0" max="1" step="0.01" value={chorusAmount} onChange={(e) => onChorusAmountChange && onChorusAmountChange(parseFloat(e.target.value))} style={{ width: '40px' }} />
-        {/* 立体声宽度 */}
-        <span style={{ fontSize: '0.7rem' }}>{lang === 'zh' ? '声场' : 'Width'}</span>
-        <input type="range" min="0" max="2" step="0.05" value={stereoWidth} onChange={(e) => onStereoWidthChange && onStereoWidthChange(parseFloat(e.target.value))} style={{ width: '40px' }} />
       </div>
     </div>
   );
