@@ -25,7 +25,7 @@ const Editor = memo(({
     undo, redo, setCurrentTrackId,
   } = project;
 
-  const { playNote, reverbSend, setReverbSend, delaySend, setDelaySend, delayTime, setDelayTime, delayFeedback, setDelayFeedback, eqLow, setEqLow, eqMid, setEqMid, eqHigh, setEqHigh } = audioEngine;
+  const { playNote, reverbSend, setReverbSend, delaySend, setDelaySend, delayTime, setDelayTime, delayFeedback, setDelayFeedback, eqLow, setEqLow, eqMid, setEqMid, eqHigh, setEqHigh, compressorThreshold, setCompressorThreshold, compressorRatio, setCompressorRatio, chorusAmount, setChorusAmount, stereoWidth, setStereoWidth } = audioEngine;
   const currentTrack = tracks.find(t => t.id === currentTrackId);
   const [editMode, setEditMode] = useState('pointer');
   const [quantizeValue, setQuantizeValue] = useState('1/4');
@@ -159,7 +159,7 @@ const Editor = memo(({
         onQuantizeValueChange={setQuantizeValue}
         onOpenAbout={handleOnOpenAbout}
         performanceInfo={audioEngine.performanceInfo}
-        // 感叹号指示器：传具体改动的效果列表，感叹号只显示实际改动的
+        // 感叹号指示器：传具体改动的效果列表
         effectsWarnings={() => {
           const warnings = [];
           if (eqLow !== 0 || eqMid !== 0 || eqHigh !== 0) {
@@ -170,6 +170,15 @@ const Editor = memo(({
           }
           if (delaySend !== 0.1 || delayTime !== 0.3 || delayFeedback !== 0.2) {
             warnings.push(lang === 'zh' ? '全局延迟 (Delay)' : lang === 'ja' ? 'グローバル ディレイ' : lang === 'ko' ? '글로벌 딜레이' : 'Global Delay');
+          }
+          if (compressorThreshold !== -12 || compressorRatio !== 20) {
+            warnings.push(lang === 'zh' ? '压缩器 (Compressor)' : lang === 'ja' ? 'コンプレッサー' : lang === 'ko' ? '컴프레서' : 'Compressor');
+          }
+          if (chorusAmount !== 0) {
+            warnings.push(lang === 'zh' ? '合唱 (Chorus)' : lang === 'ja' ? 'コーラス' : lang === 'ko' ? '코러스' : 'Chorus');
+          }
+          if (stereoWidth !== 1.0) {
+            warnings.push(lang === 'zh' ? '立体声宽度 (Stereo Width)' : lang === 'ja' ? 'ステレオ幅' : lang === 'ko' ? '스테레오 폭' : 'Stereo Width');
           }
           // 检查单音轨效果器
           for (const t of tracks) {
@@ -265,6 +274,14 @@ const Editor = memo(({
         onEqMidChange={setEqMid}
         eqHigh={eqHigh}
         onEqHighChange={setEqHigh}
+        compressorThreshold={compressorThreshold}
+        onCompressorThresholdChange={setCompressorThreshold}
+        compressorRatio={compressorRatio}
+        onCompressorRatioChange={setCompressorRatio}
+        chorusAmount={chorusAmount}
+        onChorusAmountChange={setChorusAmount}
+        stereoWidth={stereoWidth}
+        onStereoWidthChange={setStereoWidth}
         metronomeOn={audioEngine.metronomeOn}
         onMetronomeOnChange={audioEngine.setMetronomeOn}
         masterVolume={audioEngine.masterVolume}

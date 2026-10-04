@@ -3,8 +3,9 @@ import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
 import { parseSF2WithWasm, isWasmSupported } from '../lib/wasmBackend';
 
-// WASM 后端开关（默认开启，失败自动 fallback 到 JS worklet）
-const WASM_ENABLED = true;
+// 实验性 WASM 后端开关（从 localStorage 读取，默认关闭）
+const WASM_ENABLED = (typeof localStorage !== 'undefined') &&
+  localStorage.getItem('arvgrid_wasm_backend') === '1';
 
 // 前瞻调度器默认参数
 const MAX_POLYPHONY = 32; // 复音数上限（仅限主线程合成器路径）
@@ -80,13 +81,6 @@ export function useAudioEngine() {
   const [eqLow, setEqLowState] = useState(0);
   const [eqMid, setEqMidState] = useState(0);
   const [eqHigh, setEqHighState] = useState(0);
-  // 更多效果器：压缩器（已有 compressorRef）、合唱、立体声宽度
-  const chorusRef = useRef(null);
-  const stereoPannerRef = useRef(null);
-  const [compressorThreshold, setCompressorThresholdState] = useState(-12);
-  const [compressorRatio, setCompressorRatioState] = useState(20);
-  const [chorusAmount, setChorusAmountState] = useState(0);
-  const [stereoWidth, setStereoWidthState] = useState(1.0);
   const [metronomeOn, setMetronomeOn] = useState(false);
   const metronomeOnRef = useRef(false);
   const bpmRef = useRef(120);
@@ -123,7 +117,7 @@ export function useAudioEngine() {
   const loadJsWorkletImpl = useCallback(async (ctx, noteBus) => {
     try {
       // v7: 修复音符断裂 click 声——release 三次方衰减 + 记录进入时增益 + 默认 200ms
-      const workletUrl = new URL('worklets/sf2-processor.js?v=9', location.href).href;
+      const workletUrl = new URL('worklets/sf2-processor.js?v=7', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,
@@ -160,13 +154,14 @@ export function useAudioEngine() {
     master.gain.value = 0.7;
     masterGainRef.current = master;
 
-    // 添加动态压缩器防止爆音（用户可调阈值和比率）
+    // 添加动态压缩器防止爆音
+    // 调整：release 从 0.1s 降到 0.05s，让快速连续音符更清晰，避免"糊"
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = -12;
-    compressor.knee.value = 12;
-    compressor.ratio.value = 20;
-    compressor.attack.value = 0.001;
-    compressor.release.value = 0.05;
+    compressor.threshold.value = -12; // 阈值 (dB) — 更低阈值捕获更多峰值
+    compressor.knee.value = 12; // 拐点范围 — 较硬拐点
+    compressor.ratio.value = 20; // 压缩比 — 接近限制器
+    compressor.attack.value = 0.001; // 攻击时间 — 1ms 快速响应瞬态
+    compressor.release.value = 0.05; // 释放时间 — 50ms 更短，避免尾音糊
     compressorRef.current = compressor;
 
     // 示波器分析器节点 - 插入在 compressor 和 destination 之间
@@ -262,16 +257,12 @@ export function useAudioEngine() {
     noteBus.connect(delaySendGain);
     noteBusRef.current = noteBus;
 
-    // 注册 SF2 AudioWorklet
-    // WASM 优先（rustysynth 完整 SF2 引擎），失败自动 fallback 到 JS worklet
+    // 注册 SF2 AudioWorklet：单 processor 实例 + 内部 voice pool
+    // v8: 根据 WASM_ENABLED 选择 JS worklet 或 WASM worklet
     if (WASM_ENABLED && isWasmSupported()) {
       try {
-        console.log('[arvgrid WASM] Step 1: loading wasm-sf2-processor.js module...');
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=9', location.href).href;
-        console.log('[arvgrid WASM] worklet URL:', workletUrl);
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=6', location.href).href;
         await ctx.audioWorklet.addModule(workletUrl);
-        console.log('[arvgrid WASM] Step 2: module loaded, creating AudioWorkletNode...');
-
         const workletNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
           numberOfInputs: 0,
           numberOfOutputs: 1,
@@ -281,80 +272,39 @@ export function useAudioEngine() {
         workletNodeRef.current = workletNode;
         workletReadyRef.current = true;
         workletBackendRef.current = 'wasm';
-        console.log('[arvgrid WASM] Step 3: AudioWorkletNode created');
+        console.log('[arvgrid] WASM SF2 worklet loaded');
 
-        // 主动预加载 WASM 字节并推送给 worklet
-        // 不等 worklet 请求（request-response 在 Cloudflare Rocket Loader 下消息丢失）
-        // 直接 fetch → 推送，消除竞态条件
-        console.log('[arvgrid WASM] Step 4: proactively fetching WASM bytes...');
-        const wasmPaths = [
-          'wasm/audio_core_bg.wasm',
-          './wasm/audio_core_bg.wasm',
-          new URL('wasm/audio_core_bg.wasm', location.href).href,
-        ];
-
-        let wasmBytes = null;
-        let lastError = null;
-        for (let i = 0; i < wasmPaths.length; i++) {
-          const path = wasmPaths[i];
-          try {
-            console.log(`[arvgrid WASM] Step 4.${i+1}: trying path: ${path}`);
-            const resp = await fetch(path, { redirect: 'follow' });
-            if (!resp.ok) {
-              console.warn(`[arvgrid WASM] path ${i+1} failed: HTTP ${resp.status}`);
-              lastError = new Error(`HTTP ${resp.status}`);
-              continue;
+        // 预加载 WASM 字节：主线程 fetch 后传给 worklet
+        // 避免 AudioWorklet 里 fetch 行为不一致导致超时
+        workletNode.port.addEventListener('message', async (e) => {
+          if (e.data?.type === 'request-wasm-bytes') {
+            try {
+              console.log('[arvgrid] worklet requested wasm bytes, fetching...');
+              const wasmUrl = new URL('wasm/audio_core_bg.wasm', location.href);
+              const resp = await fetch(wasmUrl);
+              if (!resp.ok) {
+                throw new Error(`Failed to fetch wasm: ${resp.status}`);
+              }
+              const wasmBytes = await resp.arrayBuffer();
+              console.log('[arvgrid] sending wasm bytes to worklet:', wasmBytes.byteLength);
+              workletNode.port.postMessage({
+                type: 'init-wasm-bytes',
+                wasmBytes,
+              }, [wasmBytes]);
+            } catch (err) {
+              console.error('[arvgrid] failed to fetch wasm bytes for worklet:', err);
+              workletNode.port.postMessage({
+                type: 'init-wasm-bytes',
+                error: err.message,
+              });
             }
-            wasmBytes = await resp.arrayBuffer();
-            console.log(`[arvgrid WASM] Step 4.${i+1} success: ${wasmBytes.byteLength} bytes`);
-            break;
-          } catch (err) {
-            console.warn(`[arvgrid WASM] path ${i+1} error:`, err.message);
-            lastError = err;
           }
-        }
-
-        if (!wasmBytes) {
-          console.error('[arvgrid WASM] All fetch attempts failed:', lastError?.message);
-          throw new Error('WASM fetch failed: ' + (lastError?.message || 'unknown'));
-        }
-
-        console.log('[arvgrid WASM] Step 5: sending WASM bytes to worklet...');
-        workletNode.port.postMessage({
-          type: 'init-wasm-bytes',
-          wasmBytes,
-        }, [wasmBytes]);
-        console.log('[arvgrid WASM] Step 5 done: WASM bytes sent to worklet');
-
-        // 等待 worklet 确认 WASM 初始化完成
-        await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            console.error('[arvgrid WASM] Step 6 timeout: worklet did not confirm WASM init');
-            reject(new Error('WASM init timeout'));
-          }, 10000);
-          const handler = (e) => {
-            if (e.data?.type === 'wasm-ready' || e.data?.type === 'processor-ready') {
-              console.log('[arvgrid WASM] Step 6: worklet confirmed ready');
-              clearTimeout(timeout);
-              workletNode.port.removeEventListener('message', handler);
-              resolve();
-            } else if (e.data?.type === 'init-error') {
-              console.error('[arvgrid WASM] Step 6: worklet init error:', e.data.message);
-              clearTimeout(timeout);
-              workletNode.port.removeEventListener('message', handler);
-              reject(new Error(e.data.message));
-            }
-          };
-          workletNode.port.addEventListener('message', handler);
         });
-
-        console.log('[arvgrid WASM] WASM backend fully initialized');
       } catch (err) {
-        console.warn('[arvgrid WASM] Failed to init, falling back to JS worklet:', err);
+        console.warn('[arvgrid] WASM worklet failed, fallback to JS worklet:', err);
         await loadJsWorkletImpl(ctx, noteBus);
       }
     } else {
-      console.log('[arvgrid] WASM not enabled or not supported, using JS worklet');
       await loadJsWorkletImpl(ctx, noteBus);
     }
 
@@ -803,7 +753,7 @@ export function useAudioEngine() {
     }
 
     // 节流更新性能信息（每 2 秒最多更新一次，减少 React re-render）
-    // 优化：只在 level 真正变化时才 setState，避免无谓 re-render
+    // 之前 500ms 触发一次会引发 Editor → MenuBar → PianoRoll 重渲染链，加重 UI 卡顿
     const elapsedSinceLastUpdate = now - lastPerfUpdateRef.current;
     if (elapsedSinceLastUpdate > 2.0) {
       lastPerfUpdateRef.current = now;
@@ -812,6 +762,7 @@ export function useAudioEngine() {
       let polyphonyChanged = false;
       if (schedulerLag > 0.15) {
         level = 'critical';
+        // 自适应降级：严重延迟时减少复音数
         const newPoly = Math.max(LOW_END_MIN_POLYPHONY, adaptivePolyphonyRef.current - 4);
         if (newPoly !== adaptivePolyphonyRef.current) {
           adaptivePolyphonyRef.current = newPoly;
@@ -827,23 +778,15 @@ export function useAudioEngine() {
       } else if (schedulerLag > 0.001) {
         level = 'normal';
       } else {
+        // 性能良好时逐步恢复复音数
         if (adaptivePolyphonyRef.current < MAX_POLYPHONY) {
           adaptivePolyphonyRef.current = Math.min(MAX_POLYPHONY, adaptivePolyphonyRef.current + 1);
           polyphonyChanged = true;
         }
       }
-      // 只在 level 变化时才 setState，减少 React re-render 链
-      if (lastPerfLevelRef.current !== level) {
-        lastPerfLevelRef.current = level;
-        setPerformanceInfo({ level, mem });
-      }
-      // C5 修复：自适应复音数同步到 worklet
-      if (polyphonyChanged && workletReadyRef.current && workletNodeRef.current) {
-        workletNodeRef.current.port.postMessage({
-          type: 'set-polyphony',
-          value: adaptivePolyphonyRef.current,
-        });
-      }
+      setPerformanceInfo(prev => (prev.level === level ? prev : { level, mem }));
+      // worklet 复音数独立于主线程自适应（音频线程负载与主线程无关），
+      // 不再随 adaptivePolyphony 下降而触发 voice stealing 丢音符
     }
 
     // 清理已完成的节点组 - 原地修改避免 GC
@@ -859,8 +802,8 @@ export function useAudioEngine() {
     groups.length = writeIdx;
 
     // 调度即将到达的音符
-    // 优化：worklet 占位 group 不再 push 到 activeNodeGroupsRef，避免数组膨胀
-    // 只有合成器路径（scheduleSynthNote）才需要跟踪 AudioNode 用于 cleanup
+    // P4 优化：收集一个调度周期内所有 SF2 note-on，最后一次性 postMessage
+    // WASM 和 JS 路径都走批量发送，避免密集音符时主线程卡顿
     const sf2BatchBuffer = (src === 'sf2' && workletReadyRef.current && workletNodeRef.current) ? [] : null;
 
     while (nextEventIndexRef.current < events.length) {
@@ -869,9 +812,10 @@ export function useAudioEngine() {
 
       if (whenSec > lookahead) break;
 
-      // 复音数限制（自适应）——仅对合成器路径生效
-      // SF2 worklet 内部管理 voice stealing，不需要主线程限制
-      const polyLimit = (src === 'sf2') ? 1024 : adaptivePolyphonyRef.current;
+      // 复音数限制（自适应）
+      // SF2 模式下 worklet 内部管理 voice stealing，placeholder group 很轻量，
+      // 允许大量待播放音符入队，避免密集音符被跳过
+      const polyLimit = (src === 'sf2') ? 512 : adaptivePolyphonyRef.current;
       if (groups.length >= polyLimit) break;
 
       let group = null;
@@ -891,15 +835,14 @@ export function useAudioEngine() {
         group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.trackVol ?? 1);
       }
 
-      // 只有合成器路径的 group 才需要跟踪（worklet group 是轻量占位，不需要 cleanup）
-      if (group && !group.worklet) {
+      if (group) {
         groups.push(group);
       }
 
       nextEventIndexRef.current++;
     }
 
-    // 一次性发送批量 note-on（减少 postMessage 次数）
+    // 一次性发送批量 note-on（P4 优化）
     if (sf2BatchBuffer && sf2BatchBuffer.length > 0) {
       workletNodeRef.current.port.postMessage({ type: 'note-on-batch', notes: sf2BatchBuffer });
     }
@@ -961,7 +904,7 @@ export function useAudioEngine() {
     isPausedRef.current = false;
 
     if (playIntervalRef.current) {
-      clearTimeout(playIntervalRef.current);
+      clearInterval(playIntervalRef.current);
       playIntervalRef.current = null;
     }
     if (schedulerTimerRef.current) {
@@ -1045,18 +988,16 @@ export function useAudioEngine() {
     // 启动前瞻调度器
     schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
 
-    // 播放结束检查：用 setTimeout 链而非 setInterval，减少定时器数量
-    // 500ms 检查一次足够（比 200ms 稀疏，减少主线程定时器唤醒）
-    const checkPlaybackEnd = () => {
-      if (!isPlayingRef.current || isPausedRef.current) return;
+    // 不再用 setInterval 更新 currentTime，改由组件用 requestAnimationFrame 读取
+    // 只保留一个检查播放结束的定时器
+    playIntervalRef.current = setInterval(() => {
+      if (!isPlayingRef.current) return;
+      if (isPausedRef.current) return;
       const elapsed = ctx.currentTime - startTime;
       if (elapsed >= total + 0.5) {
         stopPlayback();
-      } else {
-        playIntervalRef.current = setTimeout(checkPlaybackEnd, 500);
       }
-    };
-    playIntervalRef.current = setTimeout(checkPlaybackEnd, 500);
+    }, 200);
   }, [initAudio, stopPlayback, runScheduler]);
 
   const pausePlayback = useCallback(() => {
@@ -1151,7 +1092,7 @@ export function useAudioEngine() {
     }
   }, []);
 
-  const engine = useMemo(() => ({
+  return useMemo(() => ({
     playNote,
     startPlayback: (tracks, bpm = 120) => startPlayback(tracks, bpm),
     stopPlayback,
@@ -1200,29 +1141,6 @@ export function useAudioEngine() {
       setEqHighState(val);
       if (eqHighRef.current) eqHighRef.current.gain.value = val;
     },
-    // 压缩器（-60 ~ 0 dB 阈值，1 ~ 20 比率）
-    compressorThreshold,
-    setCompressorThreshold: (val) => {
-      setCompressorThresholdState(val);
-      if (compressorRef.current) compressorRef.current.threshold.value = val;
-    },
-    compressorRatio,
-    setCompressorRatio: (val) => {
-      setCompressorRatioState(val);
-      if (compressorRef.current) compressorRef.current.ratio.value = val;
-    },
-    // 合唱效果（0 ~ 1）
-    chorusAmount,
-    setChorusAmount: (val) => {
-      setChorusAmountState(val);
-      // 合唱通过延迟调制实现，暂用 delay send 近似
-    },
-    // 立体声宽度（0 = mono, 1 = normal, 2 = wide）
-    stereoWidth,
-    setStereoWidth: (val) => {
-      setStereoWidthState(val);
-      // 通过左右声道增益差模拟宽度
-    },
     audioCtxRef,
     soundSource,
     setSoundSource,
@@ -1235,57 +1153,42 @@ export function useAudioEngine() {
         if (onProgress) onProgress({ stage: 'parsing', percent: 0 });
 
         if (workletBackendRef.current === 'wasm' && workletReadyRef.current && workletNodeRef.current) {
-          // WASM 路径：传 SF2 字节给 WASM worklet（rustysynth 内部解析），等待确认
-          console.log('[arvgrid WASM] loadSF2: sending SF2 to worklet, size:', arrayBuffer.byteLength);
+          // WASM 路径：传 SF2 字节给 WASM worklet，等待 worklet 确认加载成功
           if (onProgress) onProgress({ stage: 'wasm-loading', percent: 50 });
 
+          // 复制一份再 transfer，避免主线程的 arrayBuffer 被 detach 后无法访问
           const sf2Copy = arrayBuffer.slice(0);
-          try {
-            await new Promise((resolve, reject) => {
-              const handler = (e) => {
-                const msg = e.data;
-                if (msg.type === 'load-success') {
-                  console.log('[arvgrid WASM] loadSF2: worklet confirmed SF2 loaded');
-                  workletNodeRef.current.port.removeEventListener('message', handler);
-                  resolve();
-                } else if (msg.type === 'load-error') {
-                  console.error('[arvgrid WASM] loadSF2: worklet reported error:', msg.message);
-                  workletNodeRef.current.port.removeEventListener('message', handler);
-                  reject(new Error(msg.message || 'WASM SF2 load failed'));
-                }
-              };
-              workletNodeRef.current.port.addEventListener('message', handler);
-              workletNodeRef.current.port.postMessage({
-                type: 'load-sf2',
-                data: sf2Copy,
-              }, [sf2Copy]);
-              // 超时保护（30 秒）——超时后自动 fallback 到 JS 路径
-              setTimeout(() => {
-                workletNodeRef.current?.port.removeEventListener('message', handler);
-                reject(new Error('WASM SF2 load timeout (30s)'));
-              }, 30000);
-            });
-
-            if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
-            sf2DataRef.current = null;
-            sf2PresetMapRef.current.clear();
-            setSoundSource('sf2');
-            return { success: true, name: 'SF2 (WASM)' };
-          } catch (wasmErr) {
-            // WASM 失败时自动 fallback 到 JS 路径，不报错给用户
-            console.warn('[arvgrid] WASM SF2 load failed, falling back to JS:', wasmErr.message);
-            if (onProgress) onProgress({ stage: 'wasm-fallback', message: wasmErr.message });
-            // 重新加载 JS worklet（之前加载的是 WASM worklet）
-            const ctx = audioCtxRef.current;
-            if (ctx && noteBusRef.current) {
-              if (workletNodeRef.current) {
-                try { workletNodeRef.current.disconnect(); } catch(e) {}
-                workletNodeRef.current = null;
+          await new Promise((resolve, reject) => {
+            const handler = (e) => {
+              const msg = e.data;
+              if (msg.type === 'load-success') {
+                workletNodeRef.current.port.removeEventListener('message', handler);
+                resolve();
+              } else if (msg.type === 'load-error') {
+                workletNodeRef.current.port.removeEventListener('message', handler);
+                reject(new Error(msg.message || 'WASM SF2 load failed'));
               }
-              workletReadyRef.current = false;
-              await loadJsWorkletImpl(ctx, noteBusRef.current);
-            }
-          }
+            };
+            workletNodeRef.current.port.addEventListener('message', handler);
+            workletNodeRef.current.port.postMessage({
+              type: 'load-sf2',
+              data: sf2Copy,
+            }, [sf2Copy]);
+            // 超时保护（30 秒）
+            setTimeout(() => {
+              workletNodeRef.current?.port.removeEventListener('message', handler);
+              reject(new Error('WASM SF2 load timeout (30s)'));
+            }, 30000);
+          }).catch(err => {
+            throw err;
+          });
+
+          if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
+          // WASM 模式不需要 sf2DataRef（rustysynth 内部管理）
+          sf2DataRef.current = null;
+          sf2PresetMapRef.current.clear();
+          setSoundSource('sf2');
+          return { success: true, name: 'SF2 (WASM)' };
         }
 
         // JS 路径：用 Web Worker 解析
@@ -1348,12 +1251,11 @@ export function useAudioEngine() {
     },
     startTimeRef,
     analyserNodeRef,
+    performanceInfo,
   }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback,
       isPlaying, isPaused, currentTime, totalDuration, getPlaybackTime, seekTo,
-      reverbSend, delaySend, delayTime, delayFeedback, eqLow, eqMid, eqHigh, compressorThreshold, compressorRatio, chorusAmount, stereoWidth, soundSource, metronomeOn,
-      bufferSize, initAudio, setSoundSource, setBufferSize, masterVolume]);
-  // H1 修复：performanceInfo 移出 useMemo deps，避免全 App re-render 链
-  return { ...engine, performanceInfo };
+      reverbSend, delaySend, delayTime, delayFeedback, eqLow, eqMid, eqHigh, soundSource, metronomeOn,
+      bufferSize, performanceInfo, initAudio, setSoundSource, setBufferSize, masterVolume]);
 }
 
 function noteToMidi(pitch) {
@@ -1454,32 +1356,23 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgre
     }
     if (length === 0) continue;
 
-    // C2 修复：大样本用结构化克隆（保留主线程 pcmData 供导出），小样本用 transfer
-    // 之前每次都 new Int16Array(pcmData) 复制 200MB+，内存峰值翻倍
-    if (pcmData.length > 5000000) {
-      // 大样本（>5M 样本 ≈ 10MB）：结构化克隆，worklet 拿到独立副本
-      // 主线程 pcmData 保留，audioExport.ts 可用
-      workletNode.port.postMessage({
-        type: 'load-sample',
-        id: entry.id,
-        data: pcmData,
-        sampleRate: entry.sampleRate,
-        isInt16: true,
-      });
-    } else {
-      // 小样本：transfer，零拷贝
-      workletNode.port.postMessage({
-        type: 'load-sample',
-        id: entry.id,
-        data: pcmData,
-        sampleRate: entry.sampleRate,
-        isInt16: true,
-      }, [pcmData.buffer]);
-    }
+    // 直接传输 Int16Array 副本（2字节/样本），worklet 内部用预乘 _INV_32768 转换
+    // 相比 Float32Array（4字节/样本）节省 50% worklet 内存，且零额外 CPU 开销
+    // v7: 传输后释放主线程 pcmData（设为 null），让 GC 回收，降低内存占用
+    // audioExport.ts 有合成器 fallback，pcmData 为 null 时自动用合成器渲染
+    const int16Copy = new Int16Array(pcmData);
 
-    // 保留主线程 pcmData 供 audioExport.ts 离线渲染使用
-    // 之前设为 null 导致导出全部走 synth fallback
+    workletNode.port.postMessage({
+      type: 'load-sample',
+      id: entry.id,
+      data: int16Copy,
+      sampleRate: entry.sampleRate,
+      isInt16: true,
+    }, [int16Copy.buffer]);
+
+    // 传输完成后释放主线程 pcmData（降低内存：100MB SF2 不再占用 800MB）
     for (let k = 0; k < entry.sampleObjs.length; k++) {
+      entry.sampleObjs[k].pcmData = null;
       entry.sampleObjs[k].workletSampleId = entry.id;
     }
 

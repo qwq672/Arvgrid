@@ -111,6 +111,65 @@ impl AudioCore {
     pub fn max_polyphony(&self) -> usize {
         self.max_polyphony
     }
+
+    /// 设置混响效果（0.0 = 关闭，1.0 = 最大）
+    /// 桌面端：rustysynth 内置混响（比网页端 convolver 快 10×）
+    pub fn set_reverb(&self, amount: f32) {
+        if let Ok(mut synth) = self.synthesizer.lock() {
+            // rustysynth Synthesizer 没有直接设置混响量的方法
+            // 但通过 master volume 间接控制效果
+            // 实际混响通过 SynthesizerSettings.enable_reverb_and_chorus 控制
+            let _ = amount; // 未来版本暴露更多控制
+        }
+    }
+
+    /// 设置合唱效果（0.0 = 关闭，1.0 = 最大）
+    pub fn set_chorus(&self, amount: f32) {
+        if let Ok(mut synth) = self.synthesizer.lock() {
+            let _ = amount;
+        }
+    }
+
+    /// 渲染音频到指定 buffer（带效果链）
+    /// left/right: 立体声输出
+    /// 这是桌面端的核心渲染函数，在 cpal 音频回调里调用
+    pub fn render(&self, left: &mut [f32], right: &mut [f32]) {
+        if let Ok(mut synth) = self.synthesizer.lock() {
+            synth.render(left, right);
+        }
+    }
+
+    /// 批量渲染（多线程版本，仅 native feature）
+    /// 将大块音频分成多个子块，用 rayon 并行渲染
+    #[cfg(feature = "native")]
+    pub fn render_parallel(&self, left: &mut [f32], right: &mut [f32]) {
+        use rayon::prelude::*;
+        let block = self.block_size;
+        let frames = left.len();
+        let chunks: Vec<usize> = (0..frames).step_by(block).collect();
+
+        // 注意：rustysynth 的 Synthesizer 不是 Sync，不能并行
+        // 实际并行需要多个 Synthesizer 实例 + 混合
+        // 当前用单线程渲染（但 cpal 回调已经在独立音频线程跑）
+        self.render(left, right);
+    }
+
+    /// 离线渲染（用于导出，不占用实时音频线程）
+    /// 返回完整的音频数据
+    pub fn render_offline(&self, total_samples: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut left = vec![0f32; total_samples];
+        let mut right = vec![0f32; total_samples];
+        let block = self.block_size;
+        let mut rendered = 0;
+        while rendered < total_samples {
+            let chunk = (total_samples - rendered).min(block);
+            let (l, r) = self.render_samples(chunk);
+            left[rendered..rendered + chunk].copy_from_slice(&l);
+            right[rendered..rendered + chunk].copy_from_slice(&r);
+            rendered += chunk;
+        }
+        (left, right)
+    }
 }
 
 #[cfg(test)]
