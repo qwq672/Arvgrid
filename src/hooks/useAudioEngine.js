@@ -1462,26 +1462,15 @@ async function sendSamplesToWorklet(sf2Data, workletNode, idCounterRef, onProgre
 
     // C2 修复：大样本用结构化克隆（保留主线程 pcmData 供导出），小样本用 transfer
     // 之前每次都 new Int16Array(pcmData) 复制 200MB+，内存峰值翻倍
-    if (pcmData.length > 5000000) {
-      // 大样本（>5M 样本 ≈ 10MB）：结构化克隆，worklet 拿到独立副本
-      // 主线程 pcmData 保留，audioExport.ts 可用
-      workletNode.port.postMessage({
-        type: 'load-sample',
-        id: entry.id,
-        data: pcmData,
-        sampleRate: entry.sampleRate,
-        isInt16: true,
-      });
-    } else {
-      // 小样本：transfer，零拷贝
-      workletNode.port.postMessage({
-        type: 'load-sample',
-        id: entry.id,
-        data: pcmData,
-        sampleRate: entry.sampleRate,
-        isInt16: true,
-      }, [pcmData.buffer]);
-    }
+    // 全部用结构化克隆（不 transfer），保留主线程 pcmData 供导出用
+    // 之前小样本 transfer 导致 pcmData detached，导出时 fallback 到 synth
+    workletNode.port.postMessage({
+      type: 'load-sample',
+      id: entry.id,
+      data: pcmData,
+      sampleRate: entry.sampleRate,
+      isInt16: true,
+    });
 
     // 保留主线程 pcmData 供 audioExport.ts 离线渲染使用
     // 之前设为 null 导致导出全部走 synth fallback

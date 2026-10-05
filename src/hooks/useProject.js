@@ -221,11 +221,16 @@ export function useProject() {
     }));
     setTracks(newTracks);
     setBpm(midiData.bpm || 120);
-    // 保留已有 meta，仅用 MIDI 数据补充（不清空已有值）
+    // 自动识别 MIDI 元数据
+    // 从 track name 推断 artist（如果第一个 track 名不是乐器名）
+    const firstTrackName = newTracks[0]?.name || '';
+    const isInstrumentName = (name) => /^(Piano|Drums|Track|Acoustic|Electric|Bass|Guitar|Strings|Brass|Synth|Organ|Flute|Violin|Cello|Trumpet)/i.test(name);
+    const inferredArtist = firstTrackName && !isInstrumentName(firstTrackName) ? firstTrackName : '';
     setMeta(prev => ({
       ...prev,
       title: midiData.title || prev.title || '',
       copyright: midiData.copyright || prev.copyright || '',
+      artist: inferredArtist || prev.artist || '',
     }));
     setCurrentTrackId(newTracks[0]?.id);
   }, [pushUndo]);
@@ -258,12 +263,14 @@ export function useProject() {
 
   // 导出工程 JSON 文件
   const exportProject = useCallback(() => {
-    // 紧凑序列化：短键名 + 精度截断，减少文件大小约 60%
+    // v3 格式：加 effects + channel 字段
     const compact = {
-      v: 2, // 格式版本
+      v: 3, // 格式版本
       tracks: tracks.map(t => ({
         id: t.id, n: t.name, p: t.program, v: t.volume, pn: t.pan,
         m: t.mute ? 1 : 0, g: t.group || '', r: t.reverb || 0, c: t.color || '',
+        ch: t.channel, // MIDI channel
+        fx: t.effects || null, // 效果器设置
         notes: t.notes.map(n => ({
           p: n.pitch,
           s: Math.round(n.startSec * 1000) / 1000,
@@ -287,14 +294,16 @@ export function useProject() {
     pushUndo();
     const raw = JSON.parse(jsonData);
     let data;
-    if (raw.v === 2) {
-      // 紧凑格式：展开短键名
+    if (raw.v === 3 || raw.v === 2) {
+      // v3/v2 紧凑格式：展开短键名
       data = {
         tracks: raw.tracks.map((t, idx) => ({
           id: t.id, name: t.n || t.name || 'Track', program: t.p ?? t.program ?? 0,
           volume: t.v ?? t.volume ?? 80, pan: t.pn ?? t.pan ?? 64,
           mute: !!(t.m ?? t.mute), group: t.g ?? t.group ?? '', reverb: t.r ?? t.reverb ?? 0,
           color: t.c || t.color || TRACK_COLORS[idx % TRACK_COLORS.length],
+          channel: t.ch ?? t.channel, // v3: MIDI channel
+          effects: t.fx ?? t.effects ?? null, // v3: 效果器
           notes: t.notes.map(n => ({
             pitch: n.p ?? n.pitch,
             startSec: n.s ?? n.startSec ?? 0,

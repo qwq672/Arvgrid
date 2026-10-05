@@ -122,7 +122,7 @@ export default function HomePage({
             {/* 版本徽章 */}
             <div style={{ textAlign: 'center', paddingBottom: 16 }}>
               <span style={{ display: 'inline-block', color: 'var(--accent)', fontSize: '0.72rem', fontWeight: 600, padding: '3px 12px', borderRadius: 20, border: '1px solid var(--accent)' }}>
-                v260801
+                v261005
               </span>
               <span style={{ marginLeft: 8, fontSize: '0.68rem', color: 'var(--text-muted)' }}>MIT License</span>
             </div>
@@ -172,6 +172,21 @@ export default function HomePage({
         onLoadSF2={onLoadSF2}
         sf2Loaded={sf2Loaded}
         sf2Name={sf2Name}
+        bufferSize="medium"
+        onBufferSizeChange={() => {}}
+        // 主页传默认效果器值，避免 undefined 导致渲染错误
+        eqLow={0} onEqLowChange={() => {}}
+        eqMid={0} onEqMidChange={() => {}}
+        eqHigh={0} onEqHighChange={() => {}}
+        compressorThreshold={-12} onCompressorThresholdChange={() => {}}
+        compressorRatio={20} onCompressorRatioChange={() => {}}
+        chorusAmount={0} onChorusAmountChange={() => {}}
+        stereoWidth={1} onStereoWidthChange={() => {}}
+        reverbSend={0.08} onReverbSendChange={() => {}}
+        delaySend={0.1} onDelaySendChange={() => {}}
+        delayTime={0.3} onDelayTimeChange={() => {}}
+        delayFeedback={0.2} onDelayFeedbackChange={() => {}}
+        audioCtxRef={null}
       />
     </div>
   );

@@ -354,7 +354,7 @@ const Editor = memo(({
             {/* 版本徽章 */}
             <div style={{ textAlign: 'center', paddingBottom: 16 }}>
               <span style={{ display: 'inline-block', color: 'var(--accent)', fontSize: '0.72rem', fontWeight: 600, padding: '3px 12px', borderRadius: 20, border: '1px solid var(--accent)' }}>
-                v260801
+                v261005
               </span>
               <span style={{ marginLeft: 8, fontSize: '0.68rem', color: 'var(--text-muted)' }}>MIT License</span>
             </div>
