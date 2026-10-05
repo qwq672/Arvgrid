@@ -1267,8 +1267,14 @@ export function useAudioEngine() {
             });
 
             if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
-            sf2DataRef.current = null;
-            sf2PresetMapRef.current.clear();
+            // WASM 模式下也保留主线程 sf2Data（供导出用）
+            // 之前设为 null 导致导出全部走 synth fallback
+            try {
+              sf2DataRef.current = parseSF2(arrayBuffer, audioCtxRef.current);
+              sf2PresetMapRef.current.clear();
+            } catch (e) {
+              console.warn('[arvgrid] WASM mode: failed to parse SF2 for export fallback:', e.message);
+            }
             setSoundSource('sf2');
             return { success: true, name: 'SF2 (WASM)' };
           } catch (wasmErr) {
@@ -1329,7 +1335,7 @@ export function useAudioEngine() {
         return { success: false, name: '', error: err?.message || String(err) };
       }
     },
-    sf2Loaded: !!sf2DataRef.current,
+    sf2Loaded: !!sf2DataRef.current || workletBackendRef.current === 'wasm',
     _getSf2Data: () => sf2DataRef.current,
     initAudio,
     metronomeOn,
