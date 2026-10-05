@@ -199,6 +199,10 @@ export async function parseMidiFile(arrayBuffer) {
 
   // 对 tempo map 按 tick 排序
   tempoMap.sort((a, b) => a.tick - b.tick);
+  // 如果首条 tempo 不在 tick 0，插入默认 120 BPM 占位
+  if (tempoMap.length === 0 || tempoMap[0].tick > 0) {
+    tempoMap.unshift({ tick: 0, bpm: 120 });
+  }
 
   // 确定初始 BPM
   const initialBpm = tempoMap.length > 0 ? tempoMap[0].bpm : 120;
@@ -429,7 +433,8 @@ export function generateMidiFile(tracks, bpm, meta = {}) {
 
   const trackBuffers = [];
   for (const [tid, evs] of trackMap) {
-    evs.sort((a, b) => a.tick - b.tick);
+    // 不再重新排序（已在第 404 行全局排序时用 tiebreaker 保证 noteOff < noteOn）
+    // evs.sort((a, b) => a.tick - b.tick);
     let lastTick = 0;
     const buffer = [];
     for (const ev of evs) {

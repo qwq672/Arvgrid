@@ -1,0 +1,14 @@
+{
+  "name": "arvgrid-cli",
+  "version": "1.0.0",
+  "description": "Arvgrid CLI - AI agent friendly MIDI composer, outputs arvgrid project format",
+  "type": "module",
+  "bin": {
+    "arvgrid": "./bin/arvgrid.js"
+  },
+  "scripts": {
+    "start": "node bin/arvgrid.js"
+  },
+  "dependencies": {},
+  "license": "MIT"
+}
