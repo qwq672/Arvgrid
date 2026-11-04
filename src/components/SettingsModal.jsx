@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 import { isWasmSupported } from '../lib/wasmBackend';
+import AutomationPanel from './AutomationPanel';
 
 export default function SettingsPanel({
   open, onClose,
@@ -23,6 +24,9 @@ export default function SettingsPanel({
   noteOverlap, onNoteOverlapChange,
   delayTime, onDelayTimeChange, delayFeedback, onDelayFeedbackChange,
   audioCtxRef,  // 音频上下文引用（用于输出设备选择）
+  // 自动化（时间曲线）
+  automation, onAutomationChange, onAutomationClear,
+  autoCurrentTime, autoDuration,
 }) {
   const fileInputRef = useRef(null);
   const [search, setSearch] = useState('');
@@ -406,6 +410,32 @@ export default function SettingsPanel({
                     style={{ width: 70 }} />
                 </div>
               )}
+            </div>
+          )}
+
+          {matchSearch(lang === 'zh' ? '自动化' : 'Automation') && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                {lang === 'zh' ? '自动化曲线 (时间调整)' : 'Automation (Time Curve)'}
+              </label>
+              <div style={{
+                fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 8,
+                padding: '6px 8px', background: 'var(--bg-input, rgba(255,255,255,0.03))',
+                borderRadius: 4, border: '1px solid var(--border)',
+                lineHeight: 1.5,
+              }}>
+                {lang === 'zh'
+                  ? '让任意参数随时间变化：音量、EQ、动态力度、混响发送等。选中参数后点击「启用」，再双击曲线添加关键帧。播放时按时间自动插值，让 Arvgrid 接近完整 DAW。'
+                  : 'Let any parameter evolve over time: volume, EQ, humanize velocity, reverb send, etc. Select a parameter, click "Enable", double-click the curve to add keyframes. Values are interpolated automatically during playback, bringing Arvgrid closer to a full DAW.'}
+              </div>
+              <AutomationPanel
+                automation={automation || {}}
+                onChange={onAutomationChange}
+                onClear={onAutomationClear}
+                currentTime={autoCurrentTime || 0}
+                totalDuration={autoDuration || 16}
+                lang={lang}
+              />
             </div>
           )}
 

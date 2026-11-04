@@ -68,35 +68,58 @@ export function useProject() {
   const [currentTrackId, setCurrentTrackId] = useState(tracks[0].id);
   const [bpm, setBpm] = useState(120);
   const [meta, setMeta] = useState({ title: "", artist: "", singer: "", copyright: "" });
+  // 自动化表：{ [paramKey]: { enabled, points: [{ t, v }] } }
+  // v4 新增；老工程没有此字段时为 {}
+  const [automation, setAutomation] = useState({});
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
 
   const pushUndo = useCallback(() => {
-    setUndoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId }]);
+    setUndoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId, automation }]);
     setRedoStack([]);
-  }, [tracks, bpm, meta, currentTrackId]);
+  }, [tracks, bpm, meta, currentTrackId, automation]);
 
   const undo = useCallback(() => {
     if (undoStack.length === 0) return;
     const last = undoStack[undoStack.length - 1];
-    setRedoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId }]);
+    setRedoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId, automation }]);
     setTracks(last.tracks);
     setBpm(last.bpm);
     setMeta(last.meta);
     setCurrentTrackId(last.currentTrackId);
+    setAutomation(last.automation || {});
     setUndoStack(prev => prev.slice(0, -1));
-  }, [undoStack, tracks, bpm, meta, currentTrackId]);
+  }, [undoStack, tracks, bpm, meta, currentTrackId, automation]);
 
   const redo = useCallback(() => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
-    setUndoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId }]);
+    setUndoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId, automation }]);
     setTracks(next.tracks);
     setBpm(next.bpm);
     setMeta(next.meta);
     setCurrentTrackId(next.currentTrackId);
+    setAutomation(next.automation || {});
     setRedoStack(prev => prev.slice(0, -1));
-  }, [redoStack, tracks, bpm, meta, currentTrackId]);
+  }, [redoStack, tracks, bpm, meta, currentTrackId, automation]);
+
+  // 自动化操作：单点修改 / 整体替换 / 清空
+  const updateAutomation = useCallback((key, automationObj) => {
+    pushUndo();
+    setAutomation(prev => ({ ...prev, [key]: automationObj }));
+  }, [pushUndo]);
+  const setAutomationAll = useCallback((next) => {
+    pushUndo();
+    setAutomation(next || {});
+  }, [pushUndo]);
+  const clearAutomationParam = useCallback((key) => {
+    pushUndo();
+    setAutomation(prev => {
+      const n = { ...prev };
+      delete n[key];
+      return n;
+    });
+  }, [pushUndo]);
 
   // 轨道操作
   const addTrack = useCallback(() => {
@@ -233,6 +256,8 @@ export function useProject() {
       artist: inferredArtist || prev.artist || '',
     }));
     setCurrentTrackId(newTracks[0]?.id);
+    // 兼容从 autosave 恢复时携带的 automation 表
+    setAutomation(midiData.automation || {});
   }, [pushUndo]);
 
   // 嵌入 MIDI 数据（追加到当前工程）
@@ -263,14 +288,14 @@ export function useProject() {
 
   // 导出工程 JSON 文件
   const exportProject = useCallback(() => {
-    // v3 格式：加 effects + channel 字段
+    // v4 格式：在 v3 基础上加 automation 字段
     const compact = {
-      v: 3, // 格式版本
+      v: 4,
       tracks: tracks.map(t => ({
         id: t.id, n: t.name, p: t.program, v: t.volume, pn: t.pan,
         m: t.mute ? 1 : 0, g: t.group || '', r: t.reverb || 0, c: t.color || '',
-        ch: t.channel, // MIDI channel
-        fx: t.effects || null, // 效果器设置
+        ch: t.channel,
+        fx: t.effects || null,
         notes: t.notes.map(n => ({
           p: n.pitch,
           s: Math.round(n.startSec * 1000) / 1000,
@@ -279,6 +304,8 @@ export function useProject() {
         })),
       })),
       bpm, meta,
+      // v4 新增：自动化表
+      au: automation && Object.keys(automation).length > 0 ? automation : undefined,
     };
     const blob = new Blob([JSON.stringify(compact)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -287,23 +314,24 @@ export function useProject() {
     a.download = 'arvgrid_project.json';
     a.click();
     URL.revokeObjectURL(url);
-  }, [tracks, bpm, meta]);
+  }, [tracks, bpm, meta, automation]);
 
   // 导入工程 JSON 文件（替换当前）
   const importProject = useCallback((jsonData) => {
     pushUndo();
     const raw = JSON.parse(jsonData);
     let data;
-    if (raw.v === 3 || raw.v === 2) {
-      // v3/v2 紧凑格式：展开短键名
+    let importedAutomation = {};
+    if (raw.v === 4 || raw.v === 3 || raw.v === 2) {
+      // v4/v3/v2 紧凑格式：展开短键名
       data = {
         tracks: raw.tracks.map((t, idx) => ({
           id: t.id, name: t.n || t.name || 'Track', program: t.p ?? t.program ?? 0,
           volume: t.v ?? t.volume ?? 80, pan: t.pn ?? t.pan ?? 64,
           mute: !!(t.m ?? t.mute), group: t.g ?? t.group ?? '', reverb: t.r ?? t.reverb ?? 0,
           color: t.c || t.color || TRACK_COLORS[idx % TRACK_COLORS.length],
-          channel: t.ch ?? t.channel, // v3: MIDI channel
-          effects: t.fx ?? t.effects ?? null, // v3: 效果器
+          channel: t.ch ?? t.channel,
+          effects: t.fx ?? t.effects ?? null,
           notes: t.notes.map(n => ({
             pitch: n.p ?? n.pitch,
             startSec: n.s ?? n.startSec ?? 0,
@@ -313,14 +341,17 @@ export function useProject() {
         })),
         bpm: raw.bpm, meta: raw.meta,
       };
+      importedAutomation = raw.au || {};
     } else {
       // 旧格式（v1，长键名），直接使用
       data = raw;
+      importedAutomation = raw.automation || raw.au || {};
     }
     setTracks(data.tracks);
     setBpm(data.bpm);
     setMeta(data.meta || { title: "", artist: "", singer: "", copyright: "" });
     setCurrentTrackId(data.tracks[0]?.id);
+    setAutomation(importedAutomation);
   }, [pushUndo]);
 
   // 新建工程
@@ -331,18 +362,20 @@ export function useProject() {
     setBpm(120);
     setMeta({ title: "", artist: "", singer: "", copyright: "" });
     setCurrentTrackId(newId);
+    setAutomation({});
   }, [pushUndo]);
 
   // 获取当前工程数据（用于自动保存）
   const getCurrentProjectData = useCallback(() => {
-    return { tracks, bpm, meta, currentTrackId };
-  }, [tracks, bpm, meta, currentTrackId]);
+    return { tracks, bpm, meta, currentTrackId, automation };
+  }, [tracks, bpm, meta, currentTrackId, automation]);
 
   return {
     tracks,
     currentTrackId,
     bpm,
     meta,
+    automation,
     setBpm,
     setMeta,
     addTrack,
@@ -365,5 +398,9 @@ export function useProject() {
     setCurrentTrackId,
     getCurrentProjectData,
     pushUndo,
+    // 自动化
+    updateAutomation,
+    setAutomationAll,
+    clearAutomationParam,
   };
 }

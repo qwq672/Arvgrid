@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { memo, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import MenuBar from './MenuBar';
 import TrackPanel from './TrackPanel';
 import PianoRoll from './PianoRoll';
@@ -6,6 +6,7 @@ import Transport from './Transport';
 import SettingsModal from './SettingsModal';
 import MidiInfoModal from './MidiInfoModal';
 import ExportAudioDialog from './ExportAudioDialog';
+import AutomationPanel from './AutomationPanel';
 import { Icons } from './Icons';
 
 const Editor = memo(({
@@ -23,6 +24,7 @@ const Editor = memo(({
     addTrack, deleteTrack, updateTrack, quantizeTrack, clearTrack,
     duplicateTrack, updateTrackGroup,
     undo, redo, setCurrentTrackId,
+    automation, updateAutomation, clearAutomationParam,
   } = project;
 
   const { playNote, reverbSend, setReverbSend, delaySend, setDelaySend, delayTime, setDelayTime, delayFeedback, setDelayFeedback, eqLow, setEqLow, eqMid, setEqMid, eqHigh, setEqHigh, eqBands, setEqBand, humanizeVelocity, setHumanizeVelocity, noteOverlap, setNoteOverlap, compressorThreshold, setCompressorThreshold, compressorRatio, setCompressorRatio, chorusAmount, setChorusAmount, stereoWidth, setStereoWidth } = audioEngine;
@@ -42,6 +44,44 @@ const Editor = memo(({
       setPanelCollapsed(true);
     }
   }, []);
+
+  // 把 project.automation 同步到 audioEngine（用于播放时按时间应用）
+  useEffect(() => {
+    if (audioEngine && audioEngine.loadAutomationMap) {
+      audioEngine.loadAutomationMap(automation || {});
+    }
+  }, [automation, audioEngine]);
+
+  // 自动化面板需要"当前播放时间"来绘制播放头
+  // 当 SettingsModal 打开且在播放时，用 rAF 刷新 currentTime
+  const [autoCurrentTime, setAutoCurrentTime] = useState(0);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    if (!audioEngine.isPlaying) {
+      setAutoCurrentTime(audioEngine.getPlaybackTime ? audioEngine.getPlaybackTime() : 0);
+      return;
+    }
+    let raf;
+    const tick = () => {
+      setAutoCurrentTime(audioEngine.getPlaybackTime ? audioEngine.getPlaybackTime() : 0);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [settingsOpen, audioEngine]);
+
+  // 计算总时长，给自动化编辑器用
+  const autoDuration = useMemo(() => {
+    let max = 0;
+    for (const t of tracks) {
+      if (!t.notes) continue;
+      for (const n of t.notes) {
+        const end = (n.startSec || 0) + (n.durationSec || 0);
+        if (end > max) max = end;
+      }
+    }
+    return Math.max(8, max + 2);
+  }, [tracks]);
 
   // 缓存 ghostTracks，避免每次渲染都创建新数组
   const ghostTracks = useMemo(() => 
@@ -329,6 +369,12 @@ const Editor = memo(({
         humanizeVelocity={humanizeVelocity} onHumanizeVelocityChange={setHumanizeVelocity}
         noteOverlap={noteOverlap} onNoteOverlapChange={setNoteOverlap}
         audioCtxRef={audioEngine.audioCtxRef}
+        // 自动化（时间曲线）
+        automation={automation}
+        onAutomationChange={updateAutomation}
+        onAutomationClear={clearAutomationParam}
+        autoCurrentTime={autoCurrentTime}
+        autoDuration={autoDuration}
       />
       <MidiInfoModal
         open={midiInfoOpen}

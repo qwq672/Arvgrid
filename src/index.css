@@ -26,6 +26,19 @@
   --danger-hover: #c05050;
   --green: #5a8a5a;
   --green-hover: #6a9a6a;
+  /* 自动化曲线编辑器配色 */
+  --automation-bg: #1a1d23;
+  --automation-grid: #252a32;
+  --automation-tick: #6b7280;
+  --automation-line: #4a9eff;
+  --automation-area: rgba(74,158,255,0.12);
+  --automation-point: #ffffff;
+  --automation-point-stroke: #4a9eff;
+  --automation-point-active: #ffd43b;
+  --automation-playhead: #ffd43b;
+  /* 输入框 / select 一致风格 */
+  --bg-input: #1a1d23;
+  --bg-button: #2a2a30;
 }
 
 :root[data-theme="light"] {
@@ -48,6 +61,18 @@
   --danger-hover: #d06060;
   --green: #4a7a4a;
   --green-hover: #5a8a5a;
+  /* 自动化曲线编辑器配色（亮色） */
+  --automation-bg: #f0f0f4;
+  --automation-grid: #d8d8de;
+  --automation-tick: #6a6a70;
+  --automation-line: #2563eb;
+  --automation-area: rgba(37,99,235,0.10);
+  --automation-point: #1a1d23;
+  --automation-point-stroke: #2563eb;
+  --automation-point-active: #f59e0b;
+  --automation-playhead: #f59e0b;
+  --bg-input: #ffffff;
+  --bg-button: #d8d8de;
 }
 
 html, body {
@@ -422,4 +447,56 @@ body.touch-mode .transport button,
     min-height: 32px;
     min-width: 32px;
   }
+}
+/* ====== SettingsModal 视觉层次优化（v4 自动化更新） ====== */
+.settings-section {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: var(--track-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.settings-section-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  display: block;
+  margin-bottom: 8px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.settings-row > span:first-child {
+  width: 50px;
+  font-size: 0.72rem;
+  flex-shrink: 0;
+}
+.settings-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--automation-line);
+}
+.settings-row > span:last-child {
+  width: 50px;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+select, input[type="text"], input[type="number"] {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+}
+input[type="range"] {
+  accent-color: var(--automation-line);
+  height: 14px;
 }

@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
 import { parseSF2WithWasm, isWasmSupported } from '../lib/wasmBackend';
+import { AUTOMATION_PARAMS, AUTOMATION_PARAM_MAP, sampleAutomation } from '../lib/automation';
 
 // WASM 后端开关（默认开启，失败自动 fallback 到 JS worklet）
 const WASM_ENABLED = true;
@@ -110,6 +111,71 @@ export function useAudioEngine() {
   const [noteOverlap, setNoteOverlap] = useState(0);
   const noteOverlapRef = useRef(0);
   useEffect(() => { noteOverlapRef.current = noteOverlap; }, [noteOverlap]);
+
+  // ====== 自动化系统 ======
+  // automationMapRef: { [paramKey]: { enabled, points } }
+  // 当前应用值缓存（避免每帧重复 setValueAtTime）
+  const automationMapRef = useRef({});
+  const automationRafRef = useRef(null);
+  const lastAppliedRef = useRef({});  // { [paramKey]: lastNaturalValue }
+  // React 状态：仅在 enabled / points 结构变化时更新；UI 用它来重渲染
+  const [automationMap, setAutomationMapState] = useState({});
+
+  // 把所有音频节点打包成 refs，供 param.apply 使用
+  const getAutomationRefs = useCallback(() => ({
+    masterGain: masterGainRef.current,
+    eqLow: eqLowRef.current,
+    eqMid: eqMidRef.current,
+    eqHigh: eqHighRef.current,
+    eqBands: eqBandsRef.current,
+    wetReverbGain: wetReverbGainRef.current,
+    wetDelayGain: wetDelayGainRef.current,
+    dryGain: dryGainRef.current,
+    delayNode: delayNodeRef.current,
+    delayFeedback: delayFeedbackRef.current,
+    compressor: compressorRef.current,
+    humanizeVelocityRef,
+    noteOverlapRef,
+  }), []);
+
+  // 单次应用：根据 t 应用所有启用的 automation
+  const applyAutomationsAt = useCallback((t) => {
+    const map = automationMapRef.current;
+    const refs = getAutomationRefs();
+    for (const key in map) {
+      const auto = map[key];
+      if (!auto || !auto.enabled || !auto.points || auto.points.length === 0) continue;
+      const param = AUTOMATION_PARAM_MAP[key];
+      if (!param) continue;
+      const n = sampleAutomation(auto.points, t);
+      if (n == null || !isFinite(n)) continue;
+      const natural = param.fromNormalized(n);
+      // 避免每帧都 setValueAtTime（变化 < step/4 不更新）
+      const last = lastAppliedRef.current[key];
+      if (last != null && Math.abs(last - natural) < (param.step || 0.001) * 0.25) continue;
+      try { param.apply(natural, refs); } catch (e) { /* ignore */ }
+      lastAppliedRef.current[key] = natural;
+    }
+  }, [getAutomationRefs]);
+
+  // 启动/停止自动化 rAF 循环
+  const startAutomationLoop = useCallback(() => {
+    if (automationRafRef.current) return;
+    const tick = () => {
+      const t = getPlaybackTimeRef.current();
+      applyAutomationsAt(t);
+      automationRafRef.current = requestAnimationFrame(tick);
+    };
+    automationRafRef.current = requestAnimationFrame(tick);
+  }, [applyAutomationsAt]);
+
+  const stopAutomationLoop = useCallback(() => {
+    if (automationRafRef.current) {
+      cancelAnimationFrame(automationRafRef.current);
+      automationRafRef.current = null;
+    }
+  }, []);
+
   const [metronomeOn, setMetronomeOn] = useState(false);
   const metronomeOnRef = useRef(false);
   const bpmRef = useRef(120);
@@ -1027,6 +1093,9 @@ export function useAudioEngine() {
     scheduledTimeoutsRef.current = [];
 
     cleanupAllNodes();
+    stopAutomationLoop();
+    // 停止后把"上次应用值"缓存清空，下次播放重新累积
+    lastAppliedRef.current = {};
 
     eventsRef.current = [];
     nextEventIndexRef.current = 0;
@@ -1038,7 +1107,7 @@ export function useAudioEngine() {
     setIsPlaying(false);
     setIsPaused(false);
     setCurrentTime(0);
-  }, [cleanupAllNodes]);
+  }, [cleanupAllNodes, stopAutomationLoop]);
 
   const startPlayback = useCallback(async (tracks, bpm = 120) => {
     if (isPlayingRef.current) stopPlayback();
@@ -1100,6 +1169,9 @@ export function useAudioEngine() {
     // 启动前瞻调度器
     schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
 
+    // 启动自动化 rAF 循环（按时间应用关键帧）
+    startAutomationLoop();
+
     // 播放结束检查：用 setTimeout 链而非 setInterval，减少定时器数量
     // 500ms 检查一次足够（比 200ms 稀疏，减少主线程定时器唤醒）
     const checkPlaybackEnd = () => {
@@ -1112,7 +1184,7 @@ export function useAudioEngine() {
       }
     };
     playIntervalRef.current = setTimeout(checkPlaybackEnd, 500);
-  }, [initAudio, stopPlayback, runScheduler]);
+  }, [initAudio, stopPlayback, runScheduler, startAutomationLoop]);
 
   const pausePlayback = useCallback(() => {
     if (!isPlayingRef.current) return;
@@ -1128,12 +1200,14 @@ export function useAudioEngine() {
       clearTimeout(schedulerTimerRef.current);
       schedulerTimerRef.current = null;
     }
+    // 暂停时停掉自动化 rAF（恢复时再启动）
+    stopAutomationLoop();
 
     // 停止所有正在播放的音符
     cleanupAllNodes();
     scheduledTimeoutsRef.current.forEach(tid => clearTimeout(tid));
     scheduledTimeoutsRef.current = [];
-  }, [cleanupAllNodes]);
+  }, [cleanupAllNodes, stopAutomationLoop]);
 
   const resumePlayback = useCallback(async (tracks, bpm = 120) => {
     if (!isPausedRef.current) return;
@@ -1166,7 +1240,9 @@ export function useAudioEngine() {
 
     // 重新启动调度器
     schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
-  }, [runScheduler]);
+    // 恢复自动化 rAF 循环
+    startAutomationLoop();
+  }, [runScheduler, startAutomationLoop]);
 
   const seekTo = (time) => {
     setCurrentTime(time);
@@ -1188,6 +1264,9 @@ export function useAudioEngine() {
     if (!ctx) return 0;
     return Math.max(0, ctx.currentTime - startTimeRef.current);
   }, []);
+  // ref 版本：供 rAF 循环读取最新闭包，避免循环持有旧 getPlaybackTime
+  const getPlaybackTimeRef = useRef(getPlaybackTime);
+  useEffect(() => { getPlaybackTimeRef.current = getPlaybackTime; }, [getPlaybackTime]);
 
   // 设置播放缓冲区 - 支持字符串预设或数字直接值
   const setBufferSize = useCallback((size) => {
@@ -1428,12 +1507,43 @@ export function useAudioEngine() {
         masterGainRef.current.gain.setValueAtTime(vol, audioCtxRef.current?.currentTime || 0);
       }
     },
+    // ====== 自动化系统公共 API ======
+    automationMap,                                   // 当前所有 automation（响应式）
+    setAutomation: (key, automation) => {
+      // 更新 ref + state
+      automationMapRef.current = { ...automationMapRef.current, [key]: automation };
+      setAutomationMapState(prev => ({ ...prev, [key]: automation }));
+    },
+    clearAutomation: (key) => {
+      const next = { ...automationMapRef.current };
+      delete next[key];
+      automationMapRef.current = next;
+      setAutomationMapState(prev => {
+        const n = { ...prev };
+        delete n[key];
+        return n;
+      });
+    },
+    // 一次性载入整张 automation 表（用于工程导入）
+    loadAutomationMap: (map) => {
+      const cleaned = map || {};
+      automationMapRef.current = cleaned;
+      setAutomationMapState(cleaned);
+    },
+    // 触发一次即时应用（不在播放时也可被调用，用于编辑器预览）
+    applyAutomationNow: (key) => {
+      const auto = automationMapRef.current[key];
+      if (!auto || !auto.enabled) return;
+      const t = getPlaybackTime();
+      applyAutomationsAt(t);
+    },
     startTimeRef,
     analyserNodeRef,
   }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback,
       isPlaying, isPaused, currentTime, totalDuration, getPlaybackTime, seekTo,
       reverbSend, delaySend, delayTime, delayFeedback, eqLow, eqMid, eqHigh, eqBands, humanizeVelocity, noteOverlap, compressorThreshold, compressorRatio, chorusAmount, stereoWidth, soundSource, metronomeOn,
-      bufferSize, initAudio, setSoundSource, setBufferSize, masterVolume]);
+      bufferSize, initAudio, setSoundSource, setBufferSize, masterVolume,
+      automationMap, applyAutomationsAt]);
   // H1 修复：performanceInfo 移出 useMemo deps，避免全 App re-render 链
   return { ...engine, performanceInfo };
 }
