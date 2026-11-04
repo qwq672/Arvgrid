@@ -213,7 +213,7 @@ export function useAudioEngine() {
   const loadJsWorkletImpl = useCallback(async (ctx, noteBus) => {
     try {
       // v7: 修复音符断裂 click 声——release 三次方衰减 + 记录进入时增益 + 默认 200ms
-      const workletUrl = new URL('worklets/sf2-processor.js?v=9', location.href).href;
+      const workletUrl = new URL('worklets/sf2-processor.js?v=10', location.href).href;
       await ctx.audioWorklet.addModule(workletUrl);
       const workletNode = new AudioWorkletNode(ctx, 'sf2-processor', {
         numberOfInputs: 0,

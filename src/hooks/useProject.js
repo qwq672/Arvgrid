@@ -74,15 +74,29 @@ export function useProject() {
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
 
+  // Undo 栈深度限制：避免大工程下 undoStack 占用内存爆炸
+  // 默认 50 步，足够回溯编辑历史，又不会因 300KB MIDI ×50 = 15MB 而爆内存
+  const MAX_UNDO_STACK = 50;
   const pushUndo = useCallback(() => {
-    setUndoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId, automation }]);
+    setUndoStack(prev => {
+      const next = [...prev, { tracks, bpm, meta, currentTrackId, automation }];
+      // 超过上限时丢弃最早的（保留最近的）
+      if (next.length > MAX_UNDO_STACK) {
+        next.shift();
+      }
+      return next;
+    });
     setRedoStack([]);
   }, [tracks, bpm, meta, currentTrackId, automation]);
 
   const undo = useCallback(() => {
     if (undoStack.length === 0) return;
     const last = undoStack[undoStack.length - 1];
-    setRedoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId, automation }]);
+    setRedoStack(prev => {
+      const next = [...prev, { tracks, bpm, meta, currentTrackId, automation }];
+      if (next.length > MAX_UNDO_STACK) next.shift();
+      return next;
+    });
     setTracks(last.tracks);
     setBpm(last.bpm);
     setMeta(last.meta);
@@ -94,7 +108,11 @@ export function useProject() {
   const redo = useCallback(() => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
-    setUndoStack(prev => [...prev, { tracks, bpm, meta, currentTrackId, automation }]);
+    setUndoStack(prev => {
+      const n = [...prev, { tracks, bpm, meta, currentTrackId, automation }];
+      if (n.length > MAX_UNDO_STACK) n.shift();
+      return n;
+    });
     setTracks(next.tracks);
     setBpm(next.bpm);
     setMeta(next.meta);
