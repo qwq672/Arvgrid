@@ -2,6 +2,8 @@ import React, { memo, useState, useEffect, useCallback, useMemo, useRef } from '
 import MenuBar from './MenuBar';
 import TrackPanel from './TrackPanel';
 import PianoRoll from './PianoRoll';
+import MixerView from './MixerView';
+import TrackInspector from './TrackInspector';
 import Transport from './Transport';
 import SettingsModal from './SettingsModal';
 import MidiInfoModal from './MidiInfoModal';
@@ -36,6 +38,8 @@ const Editor = memo(({
   const [exportAudioOpen, setExportAudioOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(null);
+  // 视图模式：'piano' = 钢琴卷帘 / 'mixer' = 调音台
+  const [viewMode, setViewMode] = useState('piano');
 
   // 窄屏（< 768px）自动折叠 TrackPanel，避免挤压 PianoRoll
   // 初次进入 Editor 时检测一次；不监听 resize 是为了避免频繁切换打断编辑
@@ -162,11 +166,37 @@ const Editor = memo(({
       else if (e.key === '2') { e.preventDefault(); setEditMode('select'); }
       else if (e.key === '3') { e.preventDefault(); setEditMode('draw'); }
       else if (e.key === '4') { e.preventDefault(); setEditMode('erase'); }
+      // DAW 风格快捷键：M 静音 / S 独奏 / Del 删除轨道
+      else if (e.key === 'm' || e.key === 'M') {
+        if (currentTrackId) {
+          const t = tracks.find(tr => tr.id === currentTrackId);
+          if (t) updateTrack(currentTrackId, { mute: !t.mute });
+        }
+      }
+      else if (e.key === 's' || e.key === 'S') {
+        if (!ctrl && !shift && currentTrackId) {
+          const t = tracks.find(tr => tr.id === currentTrackId);
+          if (t) updateTrack(currentTrackId, { solo: !t.solo });
+        }
+      }
+      else if (e.key === 'F2') {
+        e.preventDefault();
+        // 触发轨道重命名（通过 TrackPanel 的右键菜单打开）
+        // 这里发个自定义事件让 TrackPanel 监听
+        window.dispatchEvent(new CustomEvent('arvgrid-rename-track', { detail: { id: currentTrackId } }));
+      }
+      // 视图切换：P 钢琴卷帘 / X 调音台
+      else if (e.key === 'p' || e.key === 'P') {
+        if (!ctrl && !shift) { e.preventDefault(); setViewMode('piano'); }
+      }
+      else if (e.key === 'x' || e.key === 'X') {
+        if (!ctrl && !shift) { e.preventDefault(); setViewMode('mixer'); }
+      }
     };
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onNewProject, handleImportMidi, onSaveProject, onExportMidi, undo, redo, audioEngine.isPlaying, audioEngine, tracks, bpm]);
+  }, [onNewProject, handleImportMidi, onSaveProject, onExportMidi, undo, redo, audioEngine.isPlaying, audioEngine, tracks, bpm, currentTrackId, updateTrack]);
 
   return (
     <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -198,6 +228,8 @@ const Editor = memo(({
         onQuantizeValueChange={setQuantizeValue}
         onOpenAbout={handleOnOpenAbout}
         performanceInfo={audioEngine.performanceInfo}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
         // 感叹号指示器：传具体改动的效果列表
         effectsWarnings={() => {
           const warnings = [];
@@ -265,9 +297,11 @@ const Editor = memo(({
             onVolumeChange={(id, vol) => updateTrack(id, { volume: vol })}
             onPanChange={(id, pan) => updateTrack(id, { pan })}
             onMuteToggle={(id) => { const t = tracks.find(tr => tr.id === id); updateTrack(id, { mute: !t.mute }); }}
+            onSoloToggle={(id) => { const t = tracks.find(tr => tr.id === id); updateTrack(id, { solo: !t.solo }); }}
             onProgramChange={(id, prog) => updateTrack(id, { program: prog })}
             onColorChange={(id, color) => updateTrack(id, { color })}
             onCommentChange={(id, comment) => updateTrack(id, { comment })}
+            onRename={(id, name) => updateTrack(id, { name })}
             onGroupChange={handleOnGroupChange}
             onTrackReverbChange={handleOnTrackReverbChange}
             onEffectsChange={(id, effects) => updateTrack(id, { effects })}
@@ -275,7 +309,24 @@ const Editor = memo(({
             lang={lang}
           />
         </div>
-        {currentTrack && (
+        {viewMode === 'mixer' ? (
+          <MixerView
+            tracks={tracks}
+            currentTrackId={currentTrackId}
+            onSelectTrack={setCurrentTrackId}
+            onVolumeChange={(id, vol) => updateTrack(id, { volume: vol })}
+            onPanChange={(id, pan) => updateTrack(id, { pan })}
+            onMuteToggle={(id) => { const t = tracks.find(tr => tr.id === id); updateTrack(id, { mute: !t.mute }); }}
+            onSoloToggle={(id) => { const t = tracks.find(tr => tr.id === id); updateTrack(id, { solo: !t.solo }); }}
+            onAddTrack={addTrack}
+            onDeleteTrack={deleteTrack}
+            onDuplicateTrack={handleOnDuplicateTrack}
+            masterVolume={audioEngine.masterVolume}
+            onMasterVolumeChange={audioEngine.setMasterVolume}
+            lang={lang}
+            analyserNodeRef={audioEngine.analyserNodeRef}
+          />
+        ) : currentTrack && (
           <PianoRoll
             track={currentTrack}
             tracks={tracks}
@@ -289,6 +340,27 @@ const Editor = memo(({
             lang={lang}
             editMode={editMode}
             quantizeValue={quantizeValue}
+          />
+        )}
+
+        {/* 右侧 Inspector：选中轨道属性 + 单轨 FX */}
+        {!panelCollapsed && (
+          <TrackInspector
+            track={currentTrack}
+            onRename={(id, name) => updateTrack(id, { name })}
+            onColorChange={(id, color) => updateTrack(id, { color })}
+            onCommentChange={(id, comment) => updateTrack(id, { comment })}
+            onVolumeChange={(id, vol) => updateTrack(id, { volume: vol })}
+            onPanChange={(id, pan) => updateTrack(id, { pan })}
+            onMuteToggle={(id) => { const t = tracks.find(tr => tr.id === id); updateTrack(id, { mute: !t.mute }); }}
+            onSoloToggle={(id) => { const t = tracks.find(tr => tr.id === id); updateTrack(id, { solo: !t.solo }); }}
+            onProgramChange={(id, prog) => updateTrack(id, { program: prog })}
+            onEffectsChange={(id, effects) => updateTrack(id, { effects })}
+            onOpenInstrumentPicker={(id) => {
+              // 复用 TrackPanel 的 instPanel 机制：派发事件
+              window.dispatchEvent(new CustomEvent('arvgrid-open-instrument-picker', { detail: { id } }));
+            }}
+            lang={lang}
           />
         )}
       </div>

@@ -63,7 +63,7 @@ export function clearAllRecentProjects() {
 
 export function useProject() {
   const [tracks, setTracks] = useState([
-    { id: generateId(), name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0, effects: { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 } }
+    { id: generateId(), name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, solo: false, group: '', reverb: 0, effects: { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 } }
   ]);
   const [currentTrackId, setCurrentTrackId] = useState(tracks[0].id);
   const [bpm, setBpm] = useState(120);
@@ -125,7 +125,7 @@ export function useProject() {
   const addTrack = useCallback(() => {
     pushUndo();
     const newId = generateId();
-    setTracks(prev => [...prev, { id: newId, name: `Track ${prev.length+1}`, program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0, effects: { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 } }]);
+    setTracks(prev => [...prev, { id: newId, name: `Track ${prev.length+1}`, program: 0, notes: [], volume: 80, pan: 64, mute: false, solo: false, group: '', reverb: 0, effects: { eqLow: 0, eqMid: 0, eqHigh: 0, reverbSend: 0, delaySend: 0, delayTime: 0.3, delayFeedback: 0.2, spatial: 0 } }]);
     setCurrentTrackId(newId);
   }, [pushUndo]);
 
@@ -238,6 +238,7 @@ export function useProject() {
       volume: t.volume || 80,
       pan: t.pan || 64,
       mute: t.mute || false,
+      solo: t.solo || false,
       group: t.group || '',
       reverb: t.reverb || 0,
       color: t.color || TRACK_COLORS[idx % TRACK_COLORS.length],
@@ -277,6 +278,7 @@ export function useProject() {
       volume: t.volume || 80,
       pan: t.pan || 64,
       mute: t.mute || false,
+      solo: t.solo || false,
       group: t.group || '',
       reverb: t.reverb || 0,
     }));
@@ -293,7 +295,7 @@ export function useProject() {
       v: 4,
       tracks: tracks.map(t => ({
         id: t.id, n: t.name, p: t.program, v: t.volume, pn: t.pan,
-        m: t.mute ? 1 : 0, g: t.group || '', r: t.reverb || 0, c: t.color || '',
+        m: t.mute ? 1 : 0, so: t.solo ? 1 : 0, g: t.group || '', r: t.reverb || 0, c: t.color || '',
         ch: t.channel,
         fx: t.effects || null,
         notes: t.notes.map(n => ({
@@ -328,7 +330,7 @@ export function useProject() {
         tracks: raw.tracks.map((t, idx) => ({
           id: t.id, name: t.n || t.name || 'Track', program: t.p ?? t.program ?? 0,
           volume: t.v ?? t.volume ?? 80, pan: t.pn ?? t.pan ?? 64,
-          mute: !!(t.m ?? t.mute), group: t.g ?? t.group ?? '', reverb: t.r ?? t.reverb ?? 0,
+          mute: !!(t.m ?? t.mute), solo: !!(t.so), group: t.g ?? t.group ?? '', reverb: t.r ?? t.reverb ?? 0,
           color: t.c || t.color || TRACK_COLORS[idx % TRACK_COLORS.length],
           channel: t.ch ?? t.channel,
           effects: t.fx ?? t.effects ?? null,
@@ -358,7 +360,7 @@ export function useProject() {
   const newProject = useCallback(() => {
     pushUndo();
     const newId = generateId();
-    setTracks([{ id: newId, name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, group: '', reverb: 0 }]);
+    setTracks([{ id: newId, name: "Piano", program: 0, notes: [], volume: 80, pan: 64, mute: false, solo: false, group: '', reverb: 0 }]);
     setBpm(120);
     setMeta({ title: "", artist: "", singer: "", copyright: "" });
     setCurrentTrackId(newId);

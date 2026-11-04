@@ -1148,14 +1148,15 @@ export function useAudioEngine() {
     // - eventsRef.current 改为 { arrays, metadata } 结构
     // - 主字段用 Float32Array / Uint8Array 装填，避免每音符一个对象
     // - 300KB MIDI 之前要 new 5 万个 object 触发 GC，现在一次性分配 8 个 typed array
+    // Solo 处理：有任何 solo 轨时只播放 solo 轨
+    const hasSoloTrack = tracks.some(t => t.solo);
     let totalNotes = 0;
     const trackMeta = [];  // [{ program, isDrum, trackVol }, ...] 每条事件引用
-    const programList = [];
-    const isDrumList = [];
-    const trackVolList = [];
     for (let ti = 0; ti < tracks.length; ti++) {
       const track = tracks[ti];
       if (track.mute) continue;
+      // Solo 优先：若有 solo 轨，非 solo 轨被静音
+      if (hasSoloTrack && !track.solo) continue;
       if (!track.notes || track.notes.length === 0) continue;
       totalNotes += track.notes.length;
       const trackVol = Math.max(0, Math.min(1, (track.volume ?? 80) / 100));
@@ -1189,6 +1190,7 @@ export function useAudioEngine() {
     for (let ti = 0; ti < tracks.length; ti++) {
       const track = tracks[ti];
       if (track.mute) continue;
+      if (hasSoloTrack && !track.solo) continue;  // Solo 过滤
       if (!track.notes || track.notes.length === 0) continue;
       const trackVol = Math.max(0, Math.min(1, (track.volume ?? 80) / 100));
       // 找到该 track 对应的 trackMeta 下标
@@ -1676,10 +1678,12 @@ export function useAudioEngine() {
     // 桌面端：批量调度所有音符到 Rust 端的 schedule queue
     // Rust 端用 sample-accurate 时序触发，比 JS setTimeout 精确 10×
     const sampleRate = audioCtxRef.current?.sampleRate || 44100;
+    const hasSoloTrack = tracks.some(t => t.solo);  // Solo 过滤
     const events = [];
     let totalSec = 0;
     for (const track of tracks) {
       if (track.mute) continue;
+      if (hasSoloTrack && !track.solo) continue;  // Solo 过滤
       if (!track.notes) continue;
       const channel = track.isDrum ? 9 : ((track.program || 0) % 16);
       for (const note of track.notes) {

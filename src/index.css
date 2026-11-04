@@ -500,3 +500,155 @@ input[type="range"] {
   accent-color: var(--automation-line);
   height: 14px;
 }
+
+/* ====== v5 DAW 化样式 ====== */
+
+/* 视图切换器 */
+.view-switcher button {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 3px 10px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.view-switcher button.active {
+  background: var(--accent-hover);
+  color: var(--accent-text);
+}
+.view-switcher button:hover:not(.active) {
+  color: var(--text);
+  background: var(--accent);
+}
+
+/* Mixer 通道条 */
+.mixer-strip {
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  transition: border-color 0.1s;
+}
+.mixer-strip:hover {
+  border-color: var(--text-muted) !important;
+}
+.mixer-strip input[type="range"] {
+  accent-color: var(--accent-hover);
+}
+
+/* TrackInspector */
+.track-inspector {
+  user-select: none;
+}
+.track-inspector input[type="range"] {
+  accent-color: var(--accent-hover);
+}
+.track-inspector textarea:focus {
+  outline: 1px solid var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Transport 改进 */
+.controls-bar input[type="range"] {
+  accent-color: var(--accent-hover);
+}
+.controls-bar input[type="number"] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+
+/* TrackPanel 改进 */
+.track-panel button[title]:hover {
+  background: var(--accent);
+}
+
+/* 钢琴卷帘顶部 timeline (待 PianoRoll 内部加) */
+.timeline-bar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  height: 22px;
+  display: flex;
+  align-items: stretch;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  position: relative;
+  overflow: hidden;
+}
+.timeline-tick {
+  border-left: 1px solid var(--border);
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  position: relative;
+}
+.timeline-tick.major {
+  border-left-color: var(--text-muted);
+  font-weight: 600;
+  color: var(--text);
+}
+.timeline-tick.beat {
+  border-left-color: rgba(255,255,255,0.05);
+  border-left-width: 0.5px;
+}
+
+/* 改进 input range 滑块外观（让推子更精确） */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg);
+  border-radius: 3px;
+  height: 4px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-hover);
+  cursor: pointer;
+  border: 1px solid var(--text-muted);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-hover);
+  cursor: pointer;
+  border: 1px solid var(--text-muted);
+}
+
+/* 让 select 在暗色主题下统一外观 */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path fill='%236a6a70' d='M5 7L1 3h8z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  padding-right: 22px !important;
+}
+
+/* Inspector 的 FX row 紧凑 */
+.track-inspector .insp-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+/* 全局过渡，让所有按钮 hover 更流畅 */
+button {
+  transition: background 0.1s, transform 0.05s;
+}
+
+/* TrackPanel 轨道卡片选中态加阴影 */
+.track-panel > div[style*="flexDirection: column"] > div[style*="overflow: auto"] > div {
+  transition: background 0.1s, border-color 0.1s;
+}

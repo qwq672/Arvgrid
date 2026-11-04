@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 
@@ -163,8 +163,8 @@ const GM_CATEGORIES = [
 
 export default function TrackPanel({
   tracks, currentTrackId, onSelectTrack, onAddTrack, onDeleteTrack,
-  onVolumeChange, onPanChange, onMuteToggle, onProgramChange,
-  onColorChange, onCommentChange,
+  onVolumeChange, onPanChange, onMuteToggle, onSoloToggle,
+  onProgramChange, onColorChange, onCommentChange, onRename,
   onTrackReverbChange, onGroupChange, onEffectsChange,
   playNote, lang = 'zh',
 }) {
@@ -174,8 +174,29 @@ export default function TrackPanel({
   const [ctxMenu, setCtxMenu] = useState(null);
   const [commentEdit, setCommentEdit] = useState(null);
   const [fxPanel, setFxPanel] = useState(null);  // 效果器面板
+  const [renameEdit, setRenameEdit] = useState(null);  // 重命名编辑
   const clipboard = useRef(null);
   const t = useTranslation(lang);
+
+  // 监听 F2 重命名事件（从 Editor.jsx 派发）
+  useEffect(() => {
+    const handler = (e) => {
+      const id = e.detail?.id;
+      if (id) setRenameEdit(id);
+    };
+    window.addEventListener('arvgrid-rename-track', handler);
+    return () => window.removeEventListener('arvgrid-rename-track', handler);
+  }, []);
+
+  // 监听 Inspector 派发的"打开乐器选择器"事件
+  useEffect(() => {
+    const handler = (e) => {
+      const id = e.detail?.id;
+      if (id) { setInstPanel(id); setInstSearch(''); }
+    };
+    window.addEventListener('arvgrid-open-instrument-picker', handler);
+    return () => window.removeEventListener('arvgrid-open-instrument-picker', handler);
+  }, []);
 
   const filtered = instPanel ? GM_INSTRUMENTS.filter(i => {
     if (!instSearch) return true;
@@ -263,8 +284,21 @@ export default function TrackPanel({
                 <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
                   <Icons.Volume />
                   <input type="range" min="0" max="100" value={track.volume || 80} onChange={e => { e.stopPropagation(); onVolumeChange(track.id, parseInt(e.target.value)); }} style={{ width: 40 }} />
-                  <button onClick={e => { e.stopPropagation(); onMuteToggle(track.id); }} style={{ padding: '2px 4px', background: 'none' }}>
+                  <button onClick={e => { e.stopPropagation(); onMuteToggle(track.id); }} style={{ padding: '2px 4px', background: 'none', color: track.mute ? 'var(--danger)' : undefined }} title={lang === 'zh' ? '静音 (M)' : 'Mute (M)'}>
                     {track.mute ? <Icons.Mute /> : <Icons.Unmute />}
+                  </button>
+                  <button
+                    onClick={e => { e.stopPropagation(); onSoloToggle && onSoloToggle(track.id); }}
+                    style={{
+                      padding: '2px 5px', background: 'none',
+                      fontSize: '0.6rem', fontWeight: 700,
+                      color: track.solo ? 'var(--green)' : 'var(--text-muted)',
+                      border: track.solo ? '1px solid var(--green)' : '1px solid var(--border)',
+                      borderRadius: 3,
+                    }}
+                    title={lang === 'zh' ? '独奏 (S)' : 'Solo (S)'}
+                  >
+                    S
                   </button>
                   <button onClick={e => { e.stopPropagation(); setInstPanel(track.id); setInstSearch(''); }} style={{ padding: '2px 4px', background: 'none' }} title={t.instrument}>
                     <Icons.Note />
@@ -297,6 +331,9 @@ export default function TrackPanel({
           }} onClick={e => e.stopPropagation()}>
             <button onClick={() => { setInstPanel(ctxMenu.id); setInstSearch(''); setCtxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>
               <Icons.Note /> {lang === 'zh' ? '替换乐器' : 'Change Instrument'}
+            </button>
+            <button onClick={() => { setRenameEdit(ctxMenu.id); setCtxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>
+              {lang === 'zh' ? '重命名轨道' : 'Rename Track'} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginLeft: 'auto' }}>F2</span>
             </button>
             <button onClick={() => { setCommentEdit(ctxMenu.id); setCtxMenu(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 3, padding: '5px 8px', fontSize: '0.72rem', color: 'var(--text)' }}>
               {lang === 'zh' ? '更改注释' : 'Edit Comment'}
@@ -357,6 +394,24 @@ export default function TrackPanel({
             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
               <button onClick={() => setCommentEdit(null)}>{lang === 'zh' ? '取消' : 'Cancel'}</button>
               <button className="primary" onClick={() => { const input = document.querySelector('input[autofocus]'); onCommentChange(commentEdit, input?.value || ''); setCommentEdit(null); }}>
+                {lang === 'zh' ? '确定' : 'OK'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 重命名轨道 */}
+      {renameEdit && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1001, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)' }} onClick={() => setRenameEdit(null)}>
+          <div style={{ background: 'var(--panel)', padding: 16, borderRadius: 8, border: '1px solid var(--border)', minWidth: 280 }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: '0.85rem', marginBottom: 8 }}>{lang === 'zh' ? '重命名轨道' : 'Rename Track'}</div>
+            <input type="text" defaultValue={tracks.find(t => t.id === renameEdit)?.name || ''} autoFocus
+              style={{ width: '100%', marginBottom: 10 }}
+              onKeyDown={e => { if (e.key === 'Enter') { onRename && onRename(renameEdit, e.target.value); setRenameEdit(null); } if (e.key === 'Escape') setRenameEdit(null); }} />
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <button onClick={() => setRenameEdit(null)}>{lang === 'zh' ? '取消' : 'Cancel'}</button>
+              <button className="primary" onClick={() => { const input = document.querySelector('input[autofocus]'); onRename && onRename(renameEdit, input?.value || ''); setRenameEdit(null); }}>
                 {lang === 'zh' ? '确定' : 'OK'}
               </button>
             </div>

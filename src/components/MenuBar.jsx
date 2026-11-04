@@ -19,6 +19,9 @@ const MenuBar = memo(function MenuBar({
   performanceInfo = { level: 'low', mem: 0 },
   hasEffectsWarning = false,
   effectsWarnings = null,  // 函数：返回实际改动的效果列表
+  // 视图切换：'piano' (钢琴卷帘) | 'mixer' (调音台) | 'arrange' (编排)
+  viewMode = 'piano',
+  onViewModeChange = null,
 }) {
   const [activeMenu, setActiveMenu] = useState(null);
   const [warningOpen, setWarningOpen] = useState(false);
@@ -339,8 +342,43 @@ const MenuBar = memo(function MenuBar({
 
       {mode === 'touch' && <span className="mode-badge">{t.touchMode}</span>}
 
-      {/* 编辑模式 */}
-      {!homeMode && onEditModeChange && (
+      {/* 视图切换：Piano Roll / Mixer */}
+      {!homeMode && onViewModeChange && (
+        <div className="view-switcher" style={{
+          display: 'flex', gap: 1, marginLeft: 4, flexShrink: 0,
+          background: 'var(--bg)', borderRadius: 4, padding: 1, border: '1px solid var(--border)',
+        }}>
+          <button
+            className={viewMode === 'piano' ? 'active' : ''}
+            onClick={() => onViewModeChange('piano')}
+            title={lang === 'zh' ? '钢琴卷帘 (P)' : 'Piano Roll (P)'}
+            style={{
+              padding: '3px 10px', fontSize: '0.7rem', borderRadius: 3,
+              background: viewMode === 'piano' ? 'var(--accent-hover)' : 'transparent',
+              color: viewMode === 'piano' ? 'var(--accent-text)' : 'var(--text-muted)',
+              fontWeight: 500,
+            }}
+          >
+            {lang === 'zh' ? '钢琴卷帘' : 'Piano Roll'}
+          </button>
+          <button
+            className={viewMode === 'mixer' ? 'active' : ''}
+            onClick={() => onViewModeChange('mixer')}
+            title={lang === 'zh' ? '调音台 (X)' : 'Mixer (X)'}
+            style={{
+              padding: '3px 10px', fontSize: '0.7rem', borderRadius: 3,
+              background: viewMode === 'mixer' ? 'var(--accent-hover)' : 'transparent',
+              color: viewMode === 'mixer' ? 'var(--accent-text)' : 'var(--text-muted)',
+              fontWeight: 500,
+            }}
+          >
+            {lang === 'zh' ? '调音台' : 'Mixer'}
+          </button>
+        </div>
+      )}
+
+      {/* 编辑模式（仅 piano 视图显示） */}
+      {!homeMode && onEditModeChange && viewMode === 'piano' && (
         <div className="edit-toolbar">
           {editModes.map(em => (
             <button key={em.id} className={editMode === em.id ? 'active' : ''} onClick={() => onEditModeChange(em.id)} title={em.title}>
