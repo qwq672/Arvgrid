@@ -17,6 +17,8 @@ const AutomationPanel = memo(({
   currentTime = 0,
   totalDuration = 16,
   lang = 'zh',
+  getPlaybackTime,
+  isPlaying = false,
 }) => {
   const [selectedKey, setSelectedKey] = useState('master.volume');
 
@@ -146,6 +148,8 @@ const AutomationPanel = memo(({
         currentTime={currentTime}
         onChange={handlePointsChange}
         height={140}
+        getPlaybackTime={getPlaybackTime}
+        isPlaying={isPlaying}
       />
 
       {/* 当前值显示 + 操作按钮 */}

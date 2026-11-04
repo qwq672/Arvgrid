@@ -27,6 +27,7 @@ export default function SettingsPanel({
   // 自动化（时间曲线）
   automation, onAutomationChange, onAutomationClear,
   autoCurrentTime, autoDuration,
+  getPlaybackTime, isPlaying,
 }) {
   const fileInputRef = useRef(null);
   const [search, setSearch] = useState('');
@@ -435,6 +436,8 @@ export default function SettingsPanel({
                 currentTime={autoCurrentTime || 0}
                 totalDuration={autoDuration || 16}
                 lang={lang}
+                getPlaybackTime={getPlaybackTime}
+                isPlaying={isPlaying}
               />
             </div>
           )}

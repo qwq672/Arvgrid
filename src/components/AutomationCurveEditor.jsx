@@ -6,9 +6,11 @@ import { sampleAutomation } from '../lib/automation';
 //   points:   [{ t, v }]  v 已归一化到 0~1
 //   duration: 横轴总秒数
 //   param:    AUTOMATION_PARAMS 项（用于显示自然单位值）
-//   currentTime: 当前播放时间（用于画播放头）
+//   currentTime: 当前播放时间（用于画播放头，初始值，更新靠 getPlaybackTime + rAF）
 //   onChange: (nextPoints) => void
 //   height:   SVG 高度（默认 140）
+//   getPlaybackTime: () => number  可选；若提供且 isPlaying，则内部 rAF 自动更新播放头
+//   isPlaying: 是否在播放
 //
 // 交互：
 //   - 拖拽关键帧点
@@ -22,11 +24,18 @@ const AutomationCurveEditor = memo(({
   currentTime = 0,
   onChange,
   height = 140,
+  getPlaybackTime,
+  isPlaying = false,
 }) => {
   const svgRef = useRef(null);
   const [dragIdx, setDragIdx] = useState(null);
   const [hoverIdx, setHoverIdx] = useState(null);
   const [dragMode, setDragMode] = useState(null); // 'move' | 'time' | 'value'
+  const playheadLineRef = useRef(null);   // 直接操作 SVG playhead line
+  const playheadDotRef = useRef(null);    // playhead 圆点
+  const playheadTRef = useRef(currentTime);  // 当前播放头时间（ref，不触发 re-render）
+  const pointsRef = useRef(points);          // 让 rAF 读最新 points
+  useEffect(() => { pointsRef.current = points; }, [points]);
   const WIDTH = 600; // viewBox 宽度，实际可缩放
   const PAD_L = 36;
   const PAD_R = 12;
@@ -148,6 +157,42 @@ const AutomationCurveEditor = memo(({
     onChange(next);
   }, [points, onChange]);
 
+  // 播放头 rAF 循环：直接改 SVG 属性，不走 React 渲染（避免每帧 setState）
+  // 只在 getPlaybackTime 可用且 isPlaying 时启动
+  const rafRef = useRef(null);
+  useEffect(() => {
+    if (!isPlaying || !getPlaybackTime) {
+      // 不播放时清掉播放头
+      if (playheadLineRef.current) playheadLineRef.current.setAttribute('stroke', 'transparent');
+      if (playheadDotRef.current) playheadDotRef.current.setAttribute('fill', 'transparent');
+      return;
+    }
+    const tick = () => {
+      const t = getPlaybackTime() || 0;
+      playheadTRef.current = t;
+      const x = tToX(t);
+      const v = sampleAutomation(pointsRef.current, t);
+      const y = v != null ? vToY(v) : null;
+      if (playheadLineRef.current) {
+        playheadLineRef.current.setAttribute('x1', x);
+        playheadLineRef.current.setAttribute('x2', x);
+        playheadLineRef.current.setAttribute('stroke', 'var(--automation-playhead, #ffd43b)');
+      }
+      if (playheadDotRef.current) {
+        if (y != null) {
+          playheadDotRef.current.setAttribute('cx', x);
+          playheadDotRef.current.setAttribute('cy', y);
+          playheadDotRef.current.setAttribute('fill', 'var(--automation-playhead, #ffd43b)');
+        } else {
+          playheadDotRef.current.setAttribute('fill', 'transparent');
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [isPlaying, getPlaybackTime, tToX, vToY]);
+
   // 计算插值曲线 path
   const sortedPts = points.slice().sort((a, b) => a.t - b.t);
   const linePath = sortedPts.length > 0
@@ -215,13 +260,15 @@ const AutomationCurveEditor = memo(({
           <path d={linePath} fill="none" stroke="var(--automation-line, #4a9eff)" strokeWidth="1.5" strokeLinejoin="round" />
         )}
 
-        {/* 播放头 */}
-        {playheadY != null && (
-          <g>
-            <line x1={playheadX} y1={PAD_T} x2={playheadX} y2={PAD_T + PLOT_H} stroke="var(--automation-playhead, #ffd43b)" strokeWidth="0.8" strokeDasharray="3 2" />
-            <circle cx={playheadX} cy={playheadY} r="3" fill="var(--automation-playhead, #ffd43b)" stroke="#000" strokeWidth="0.5" />
-          </g>
-        )}
+        {/* 播放头（始终渲染，用 ref 控制 stroke；不播放时透明）*/}
+        <g>
+          <line ref={playheadLineRef} x1={playheadX} y1={PAD_T} x2={playheadX} y2={PAD_T + PLOT_H}
+                stroke={isPlaying ? "var(--automation-playhead, #ffd43b)" : "transparent"}
+                strokeWidth="0.8" strokeDasharray="3 2" />
+          <circle ref={playheadDotRef} cx={playheadX} cy={playheadY ?? PAD_T} r="3"
+                  fill={isPlaying && playheadY != null ? "var(--automation-playhead, #ffd43b)" : "transparent"}
+                  stroke="#000" strokeWidth="0.5" />
+        </g>
 
         {/* 关键帧点 */}
         {sortedPts.map((p, i) => {

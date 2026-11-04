@@ -914,11 +914,28 @@ export function useAudioEngine() {
     const lookahead = now + lookaheadRef.current;
     const events = eventsRef.current;
     const src = soundSourceRef.current;
+    // 兼容旧/新事件结构：新结构是 { time, duration, pitch, velocity, trackIdx, trackMeta, length }
+    // 旧结构是数组 [{ time, ... }]；统一抽象出辅助函数
+    const evtCount = events ? (events.length || (Array.isArray(events) ? events.length : 0)) : 0;
+    const evtGet = (i) => {
+      if (Array.isArray(events)) return events[i];
+      // 紧凑结构：构造一个临时对象供现有 schedule 代码使用
+      const meta = events.trackMeta[events.trackIdx[i]];
+      return {
+        time: events.time[i],
+        duration: events.duration[i],
+        pitch: events.pitch[i],
+        velocity: events.velocity[i],
+        program: meta.program,
+        isDrum: meta.isDrum,
+        trackVol: meta.trackVol,
+      };
+    };
 
     // 性能检测：检查调度器是否延迟
     let schedulerLag = 0;
-    if (nextEventIndexRef.current > 0 && nextEventIndexRef.current <= events.length) {
-      const nextEvent = events[nextEventIndexRef.current];
+    if (nextEventIndexRef.current > 0 && nextEventIndexRef.current < evtCount) {
+      const nextEvent = evtGet(nextEventIndexRef.current);
       const nextEventScheduled = startTimeRef.current + (nextEvent ? nextEvent.time : 0);
       schedulerLag = Math.max(0, now - nextEventScheduled);
     }
@@ -984,8 +1001,8 @@ export function useAudioEngine() {
     // 只有合成器路径（scheduleSynthNote）才需要跟踪 AudioNode 用于 cleanup
     const sf2BatchBuffer = (src === 'sf2' && workletReadyRef.current && workletNodeRef.current) ? [] : null;
 
-    while (nextEventIndexRef.current < events.length) {
-      const ev = events[nextEventIndexRef.current];
+    while (nextEventIndexRef.current < evtCount) {
+      const ev = evtGet(nextEventIndexRef.current);
       const whenSec = startTimeRef.current + ev.time;
 
       if (whenSec > lookahead) break;
@@ -1126,34 +1143,120 @@ export function useAudioEngine() {
     if (!ctx) return;
 
     bpmRef.current = bpm;
-    let events = [];
-    tracks.forEach(track => {
-      if (track.mute) return;
-      // P2 通道音量：0-100 映射为 0-1 增益缩放，用于防止多轨叠加爆音
+    // 紧凑事件存储（P 系列优化）：
+    // - eventsRef.current 改为 { arrays, metadata } 结构
+    // - 主字段用 Float32Array / Uint8Array 装填，避免每音符一个对象
+    // - 300KB MIDI 之前要 new 5 万个 object 触发 GC，现在一次性分配 8 个 typed array
+    let totalNotes = 0;
+    const trackMeta = [];  // [{ program, isDrum, trackVol }, ...] 每条事件引用
+    const programList = [];
+    const isDrumList = [];
+    const trackVolList = [];
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const track = tracks[ti];
+      if (track.mute) continue;
+      if (!track.notes || track.notes.length === 0) continue;
+      totalNotes += track.notes.length;
       const trackVol = Math.max(0, Math.min(1, (track.volume ?? 80) / 100));
-      track.notes.forEach(note => {
-        events.push({
-          time: note.startSec,
-          duration: note.durationSec,
-          pitch: note.pitch,
-          velocity: note.velocity,
-          program: track.program,
-          isDrum: track.isDrum || false,
-          trackVol,
-        });
+      trackMeta.push({
+        program: track.program ?? 0,
+        isDrum: !!(track.isDrum),
+        trackVol,
       });
-    });
-    events.sort((a, b) => a.time - b.time);
+    }
+    if (totalNotes === 0) {
+      setTotalDuration(0);
+      totalDurationRef.current = 0;
+      eventsRef.current = null;
+      nextEventIndexRef.current = 0;
+      isPlayingRef.current = true;
+      isPausedRef.current = false;
+      setIsPlaying(true);
+      setIsPaused(false);
+      return;
+    }
+
+    // 紧凑 typed arrays：events 数组里每条事件一个索引
+    // 索引数组 idx[i] 指向 trackMeta 的下标
+    const timeBuf = new Float32Array(totalNotes);
+    const durBuf = new Float32Array(totalNotes);
+    const pitchBuf = new Uint8Array(totalNotes);
+    const velBuf = new Uint8Array(totalNotes);
+    const trackIdxBuf = new Uint16Array(totalNotes);
+
+    let evIdx = 0;
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const track = tracks[ti];
+      if (track.mute) continue;
+      if (!track.notes || track.notes.length === 0) continue;
+      const trackVol = Math.max(0, Math.min(1, (track.volume ?? 80) / 100));
+      // 找到该 track 对应的 trackMeta 下标
+      let metaIdx = -1;
+      for (let mi = 0; mi < trackMeta.length; mi++) {
+        if (trackMeta[mi].program === (track.program ?? 0)
+            && trackMeta[mi].isDrum === !!(track.isDrum)
+            && Math.abs(trackMeta[mi].trackVol - trackVol) < 0.001) {
+          metaIdx = mi; break;
+        }
+      }
+      if (metaIdx < 0) {
+        metaIdx = trackMeta.length;
+        trackMeta.push({ program: track.program ?? 0, isDrum: !!(track.isDrum), trackVol });
+      }
+      const notes = track.notes;
+      for (let ni = 0; ni < notes.length; ni++) {
+        const note = notes[ni];
+        timeBuf[evIdx] = note.startSec || 0;
+        durBuf[evIdx] = note.durationSec || 0;
+        pitchBuf[evIdx] = typeof note.pitch === 'string'
+          ? noteStrToMidi(note.pitch)
+          : (note.pitch || 60);
+        velBuf[evIdx] = note.velocity || 90;
+        trackIdxBuf[evIdx] = metaIdx;
+        evIdx++;
+      }
+    }
+
+    // 按时间排序（间接索引排序，避免移动 5 个数组）
+    const order = new Uint32Array(totalNotes);
+    for (let i = 0; i < totalNotes; i++) order[i] = i;
+    // 简单快速排序：通过 timeBuf 间接比较
+    // 用 typed array 的 sort 比较器不稳定，自己实现 quicksort
+    quickSortByOrder(timeBuf, order, 0, totalNotes - 1);
+
+    // 应用排序到所有数组
+    const timeSorted = new Float32Array(totalNotes);
+    const durSorted = new Float32Array(totalNotes);
+    const pitchSorted = new Uint8Array(totalNotes);
+    const velSorted = new Uint8Array(totalNotes);
+    const trackIdxSorted = new Uint16Array(totalNotes);
+    for (let i = 0; i < totalNotes; i++) {
+      const src = order[i];
+      timeSorted[i] = timeBuf[src];
+      durSorted[i] = durBuf[src];
+      pitchSorted[i] = pitchBuf[src];
+      velSorted[i] = velBuf[src];
+      trackIdxSorted[i] = trackIdxBuf[src];
+    }
+
     let total = 0;
-    for (let i = 0; i < events.length; i++) {
-      const end = events[i].time + events[i].duration;
+    for (let i = 0; i < totalNotes; i++) {
+      const end = timeSorted[i] + durSorted[i];
       if (end > total) total = end;
     }
     setTotalDuration(total);
     totalDurationRef.current = total;
     if (total === 0) return;
 
-    eventsRef.current = events;
+    eventsRef.current = {
+      time: timeSorted,
+      duration: durSorted,
+      pitch: pitchSorted,
+      velocity: velSorted,
+      trackIdx: trackIdxSorted,
+      trackMeta,
+      length: totalNotes,
+    };
     nextEventIndexRef.current = 0;
     nextMetronomeIndexRef.current = 0;
 
@@ -1225,12 +1328,30 @@ export function useAudioEngine() {
     startTimeRef.current = startTime - pauseTime;
 
     // 重置调度索引，从暂停位置重新开始
+    // 用二分查找（紧凑结构 time 是 Float32Array 已排序）
     const events = eventsRef.current;
     nextEventIndexRef.current = 0;
-    for (let i = 0; i < events.length; i++) {
-      if (events[i].time >= pauseTime - 0.01) {
-        nextEventIndexRef.current = i;
-        break;
+    if (events) {
+      if (Array.isArray(events)) {
+        for (let i = 0; i < events.length; i++) {
+          if (events[i].time >= pauseTime - 0.01) {
+            nextEventIndexRef.current = i;
+            break;
+          }
+        }
+      } else {
+        // 紧凑结构：events.time 是 Float32Array（已升序排序）
+        const times = events.time;
+        const n = times.length;
+        // 二分查找第一个 >= pauseTime - 0.01
+        const target = pauseTime - 0.01;
+        let lo = 0, hi = n;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (times[mid] < target) lo = mid + 1;
+          else hi = mid;
+        }
+        nextEventIndexRef.current = lo;
       }
     }
 
@@ -1549,10 +1670,50 @@ export function useAudioEngine() {
 }
 
 function noteToMidi(pitch) {
+  if (typeof pitch === 'number') return pitch;
   const m = pitch.match(/^([A-G][#b]?)(\d+)$/);
   if (!m) return 60;
   const map = { 'C':0,'C#':1,'Db':1,'D':2,'D#':3,'Eb':3,'E':4,'F':5,'F#':6,'Gb':6,'G':7,'G#':8,'Ab':8,'A':9,'A#':10,'Bb':10,'B':11 };
   return (parseInt(m[2])+1)*12 + map[m[1]];
+}
+// 别名（语义更清晰：输入可能是字符串或数字）
+const noteStrToMidi = noteToMidi;
+
+// 间接索引快速排序：order[i] 是原始下标，按 times[order[i]] 升序排序
+// 用迭代 + 显式栈，避免 5 万音符递归爆栈
+function quickSortByOrder(times, order, lo, hi) {
+  const stack = [lo, hi];
+  while (stack.length > 0) {
+    const h = stack.pop();
+    const l = stack.pop();
+    if (l >= h) continue;
+    // 三数取中选 pivot
+    const mid = (l + h) >>> 1;
+    const pivotIdx = medianOfThreeIdx(times, order, l, mid, h);
+    // 把 pivot 换到末尾
+    swap(order, pivotIdx, h);
+    const pivotVal = times[order[h]];
+    let i = l - 1;
+    for (let j = l; j < h; j++) {
+      if (times[order[j]] < pivotVal) {
+        i++;
+        swap(order, i, j);
+      }
+    }
+    swap(order, i + 1, h);
+    const p = i + 1;
+    if (p - 1 > l) { stack.push(l, p - 1); }
+    if (p + 1 < h) { stack.push(p + 1, h); }
+  }
+}
+function swap(arr, i, j) {
+  const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+}
+function medianOfThreeIdx(times, order, a, b, c) {
+  const ta = times[order[a]], tb = times[order[b]], tc = times[order[c]];
+  if ((ta <= tb && tb <= tc) || (tc <= tb && tb <= ta)) return b;
+  if ((tb <= ta && ta <= tc) || (tc <= ta && ta <= tb)) return a;
+  return c;
 }
 
 // 在 Web Worker 里解析 SF2，避免阻塞主线程

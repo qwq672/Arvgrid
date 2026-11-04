@@ -53,25 +53,24 @@ const Editor = memo(({
   }, [automation, audioEngine]);
 
   // 自动化面板需要"当前播放时间"来绘制播放头
-  // 当 SettingsModal 打开且在播放时，用 rAF 刷新 currentTime
+  // 性能优化：不要用 useState 每帧 setState（会触发整棵 Editor 子树 reconciliation）
+  // 改为传 getPlaybackTime 回调给 AutomationPanel，由它内部 rAF 直接更新 SVG
+  // 只在 settingsOpen 切换时 set 一次初始值（避免曲线编辑器首帧错位）
   const [autoCurrentTime, setAutoCurrentTime] = useState(0);
   useEffect(() => {
-    if (!settingsOpen) return;
-    if (!audioEngine.isPlaying) {
-      setAutoCurrentTime(audioEngine.getPlaybackTime ? audioEngine.getPlaybackTime() : 0);
-      return;
+    if (settingsOpen && audioEngine.getPlaybackTime) {
+      setAutoCurrentTime(audioEngine.getPlaybackTime() || 0);
     }
-    let raf;
-    const tick = () => {
-      setAutoCurrentTime(audioEngine.getPlaybackTime ? audioEngine.getPlaybackTime() : 0);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
   }, [settingsOpen, audioEngine]);
 
   // 计算总时长，给自动化编辑器用
+  // 复用 audioEngine.totalDuration（已经在 startPlayback 里算过），
+  // 没有 tracks 变化就不重新扫；只在 tracks 变化时重算（避免每帧 O(N)）
   const autoDuration = useMemo(() => {
+    // 优先用 audioEngine 的 totalDuration（已排序时算过）
+    const fromEngine = audioEngine?.totalDuration;
+    if (fromEngine && fromEngine > 0) return Math.max(8, fromEngine + 2);
+    // 后备：扫一遍 tracks（仅 tracks 变化时执行）
     let max = 0;
     for (const t of tracks) {
       if (!t.notes) continue;
@@ -81,7 +80,7 @@ const Editor = memo(({
       }
     }
     return Math.max(8, max + 2);
-  }, [tracks]);
+  }, [tracks, audioEngine?.totalDuration]);
 
   // 缓存 ghostTracks，避免每次渲染都创建新数组
   const ghostTracks = useMemo(() => 
@@ -375,6 +374,8 @@ const Editor = memo(({
         onAutomationClear={clearAutomationParam}
         autoCurrentTime={autoCurrentTime}
         autoDuration={autoDuration}
+        getPlaybackTime={audioEngine.getPlaybackTime}
+        isPlaying={audioEngine.isPlaying}
       />
       <MidiInfoModal
         open={midiInfoOpen}

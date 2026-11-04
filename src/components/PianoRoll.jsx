@@ -42,6 +42,18 @@ function getColorRgba(hex, alpha) {
   return cached;
 }
 
+// 二分查找：返回第一个 key(arr[i]) >= target 的下标 i；若都 < target 返回 arr.length
+// 用于快速定位按 startSec 排序的音符数组里可见区间的起点
+function lowerBound(arr, target, keyFn) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (keyFn(arr[mid]) < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 export default function PianoRoll({ track, trackColor = '#888', ghostTracks = [], tracks = [], currentTrackId = null, onNotesChange, playNote, isPlaying, getPlaybackTime, lang = 'zh', editMode = 'pointer', quantizeValue = '1/4' }) {
   const canvasRef = useRef(null);
   const playheadCanvasRef = useRef(null);
@@ -145,6 +157,36 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     spatialIndexRef.current = idx;
   }, [track.notes]);
 
+  // 时间索引：按 startSec 排序的引用数组，供 draw() 用二分查找定位可见区间
+  // 关键优化：把 redraw 从 O(N) 降到 O(log N + viewport_count)
+  // 300KB MIDI (3-5 万音符) redraw 从 ~3万次坐标计算 → 仅可见的几十个
+  const sortedNotesRef = useRef([]);
+  useEffect(() => {
+    if (!track || !track.notes) {
+      sortedNotesRef.current = [];
+      return;
+    }
+    // 不拷贝音符对象，只拷贝引用 + 排序（一次 O(N log N)）
+    const arr = track.notes.slice();
+    arr.sort((a, b) => (a.startSec || 0) - (b.startSec || 0));
+    sortedNotesRef.current = arr;
+  }, [track.notes]);
+
+  // Ghost tracks 也建时间索引（每个 ghost 一份）
+  const ghostSortedRef = useRef([]);
+  useEffect(() => {
+    const arr = [];
+    if (ghostTracks) {
+      for (const g of ghostTracks) {
+        if (!g || !g.track || !g.track.notes) continue;
+        const sorted = g.track.notes.slice();
+        sorted.sort((a, b) => (a.startSec || 0) - (b.startSec || 0));
+        arr.push({ track: g.track, color: g.color, sortedNotes: sorted });
+      }
+    }
+    ghostSortedRef.current = arr;
+  }, [ghostTracks]);
+
   // 网格预渲染到离屏 canvas（P3 优化）：仅在 maxSec/zx/zy 变化时重绘网格
   // draw() 中用 drawImage 复制可见区域，避免每帧逐线 stroke
   useEffect(() => {
@@ -210,7 +252,6 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
     const zx = zoomXRef.current;
     const zy = zoomYRef.current;
     const tc = trackColorRef.current;
-    const ghosts = ghostTracksRef.current;
     const mRect = marqueeRectRef.current;
 
     // 高 DPI 支持：逻辑尺寸用于绘制，物理尺寸 = 逻辑 × DPR
@@ -276,23 +317,32 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
 
     const selSet = selectedSetRef.current;
 
-    // Ghost notes from other tracks (50% opacity) - 只绘制可见区域
+    // 可见时间区间（屏幕上能看到的 startSec 范围）
+    const visStartSec = ox / zx;
+    const visEndSec = (ox + logicalW) / zx;
+
+    // Ghost notes from other tracks (50% opacity) - 用二分查找定位可见区间
     if (showGhostsRef.current) {
-    for (let gi = 0; gi < ghosts.length; gi++) {
-      const { track: gt, color: gc } = ghosts[gi];
-      if (!gt || !gt.notes) continue;
+    for (let gi = 0; gi < ghostSortedRef.current.length; gi++) {
+      const { track: gt, color: gc, sortedNotes: gSorted } = ghostSortedRef.current[gi];
+      if (!gt || !gSorted || gSorted.length === 0) continue;
       const gcRgba = gc && gc.startsWith('#') ? getColorRgba(gc, 0.5) : 'rgba(136,136,136,0.5)';
       ctx.fillStyle = gcRgba;
-      for (let ni = 0; ni < gt.notes.length; ni++) {
-        const n = gt.notes[ni];
+      // 二分查找第一个 startSec >= visStartSec - maxDuration 的位置
+      // 简化：找第一个 startSec >= visStartSec - 10（保守 10s 笔记最长）
+      const minStart = Math.max(0, visStartSec - 10);
+      const startIdx = lowerBound(gSorted, minStart, n => n.startSec || 0);
+      for (let ni = startIdx; ni < gSorted.length; ni++) {
+        const n = gSorted[ni];
+        if ((n.startSec || 0) > visEndSec) break;  // 超出可见区间
         const midi = noteToMidi(n.pitch);
         const pitchIdx = NOTE_COUNT - 1 - (midi - BASE_MIDI);
         if (pitchIdx < 0 || pitchIdx >= NOTE_COUNT) continue;
         const x = n.startSec * zx - ox;
         const y = pitchIdx * zy - oy;
         const w = Math.max(2, n.durationSec * zx);
-        // 可见性检查
-        if (x + w < 0 || x > logicalW || y + zy < 0 || y > logicalH) continue;
+        // 可见性检查（y 轴）
+        if (y + zy < 0 || y > logicalH) continue;
         ctx.fillRect(x, y, w, zy - 2);
       }
     }
@@ -300,14 +350,17 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
 
     // 当前轨道音符 - 只绘制可见区域
     // P5 优化：拖动期间选中的音符用预览位置（基于 dragOffsetRef）绘制
-    const notes = trk.notes;
+    const sortedNotes = sortedNotesRef.current;
     const dragOrigin = dragOriginRef.current;
     const dragActive = dragOrigin && dragStateRef.current.active && dragStateRef.current.type === 'move';
     const dragOffset = dragOffsetRef.current;
     const dragSet = dragActive ? dragOrigin.selSet : null;
     const q = qStepRef.current;
-    for (let i = 0; i < notes.length; i++) {
-      const n = notes[i];
+    // 二分查找定位可见区间的起点
+    const mainStartIdx = lowerBound(sortedNotes, Math.max(0, visStartSec - 10), n => n.startSec || 0);
+    for (let i = mainStartIdx; i < sortedNotes.length; i++) {
+      const n = sortedNotes[i];
+      if ((n.startSec || 0) > visEndSec) break;  // 超出可见区间，停止
       const midi = noteToMidi(n.pitch);
       let pitchIdx = NOTE_COUNT - 1 - (midi - BASE_MIDI);
       let startSec = n.startSec;
@@ -322,8 +375,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       const y = pitchIdx * zy - oy;
       const w = Math.max(2, n.durationSec * zx);
       const h = zy - 2;
-      // 可见性检查
-      if (x + w < 0 || x > logicalW || y + h < 0 || y > logicalH) continue;
+      // 可见性检查（y 轴 + x 已由二分查找保证）
+      if (y + h < 0 || y > logicalH) continue;
       const isSel = selSet.has(n);
       ctx.fillStyle = isSel ? lightenColor(tc) : tc;
       ctx.fillRect(x, y, w, h);
