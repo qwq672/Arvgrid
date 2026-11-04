@@ -17,6 +17,10 @@ export default function SettingsPanel({
   compressorThreshold, onCompressorThresholdChange, compressorRatio, onCompressorRatioChange,
   chorusAmount, onChorusAmountChange, stereoWidth, onStereoWidthChange,
   reverbSend, onReverbSendChange, delaySend, onDelaySendChange,
+  // 动态 EQ + 人性化 + 丝滑
+  eqBands, onEqBandChange,
+  humanizeVelocity, onHumanizeVelocityChange,
+  noteOverlap, onNoteOverlapChange,
   delayTime, onDelayTimeChange, delayFeedback, onDelayFeedbackChange,
   audioCtxRef,  // 音频上下文引用（用于输出设备选择）
 }) {
@@ -267,6 +271,35 @@ export default function SettingsPanel({
                   <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '声场' : 'Width'}</span>
                   <input type="range" min="0" max="2" step="0.05" value={stereoWidth} onChange={e => onStereoWidthChange && onStereoWidthChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
                   <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{stereoWidth.toFixed(2)}</span>
+                </div>
+              </div>
+
+              {/* 动态 8 段参数 EQ */}
+              {eqBands && onEqBandChange && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>{lang === 'zh' ? '动态均衡器 (8段)' : 'Dynamic EQ (8-band)'}</div>
+                  {eqBands.map((band, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                      <span style={{ width: 50, fontSize: '0.65rem' }}>{band.freq >= 1000 ? `${(band.freq/1000).toFixed(band.freq >= 10000 ? 0 : 1)}k` : `${band.freq}`}</span>
+                      <input type="range" min="-12" max="12" step="0.5" value={band.gain} onChange={e => onEqBandChange(i, { gain: parseFloat(e.target.value) })} style={{ flex: 1 }} />
+                      <span style={{ width: 40, fontSize: '0.6rem', color: 'var(--text-muted)', textAlign: 'right' }}>{band.gain > 0 ? '+' : ''}{band.gain.toFixed(1)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 人性化 + 丝滑音符 */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>{lang === 'zh' ? '人性化' : 'Humanize'}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '力度' : 'Vel'}</span>
+                  <input type="range" min="0" max="1" step="0.05" value={humanizeVelocity || 0} onChange={e => onHumanizeVelocityChange && onHumanizeVelocityChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{Math.round((humanizeVelocity || 0) * 100)}%</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ width: 50, fontSize: '0.7rem' }}>{lang === 'zh' ? '丝滑' : 'Smooth'}</span>
+                  <input type="range" min="0" max="1" step="0.05" value={noteOverlap || 0} onChange={e => onNoteOverlapChange && onNoteOverlapChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ width: 40, fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'right' }}>{Math.round((noteOverlap || 0) * 100)}%</span>
                 </div>
               </div>
             </div>

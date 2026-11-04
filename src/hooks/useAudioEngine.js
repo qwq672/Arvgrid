@@ -77,6 +77,21 @@ export function useAudioEngine() {
   const eqLowRef = useRef(null);
   const eqMidRef = useRef(null);
   const eqHighRef = useRef(null);
+  // 动态均衡器：8 段参数 EQ
+  const eqBandsRef = useRef([]);  // 8 个 BiquadFilter 节点链
+  const [eqBands, setEqBandsState] = useState(() => {
+    // 8 段：60Hz, 150Hz, 400Hz, 1kHz, 2.5kHz, 6kHz, 12kHz, 16kHz
+    return [
+      { freq: 60, gain: 0, q: 1.0 },
+      { freq: 150, gain: 0, q: 1.0 },
+      { freq: 400, gain: 0, q: 1.0 },
+      { freq: 1000, gain: 0, q: 1.0 },
+      { freq: 2500, gain: 0, q: 1.0 },
+      { freq: 6000, gain: 0, q: 1.0 },
+      { freq: 12000, gain: 0, q: 1.0 },
+      { freq: 16000, gain: 0, q: 1.0 },
+    ];
+  });
   const [eqLow, setEqLowState] = useState(0);
   const [eqMid, setEqMidState] = useState(0);
   const [eqHigh, setEqHighState] = useState(0);
@@ -87,6 +102,14 @@ export function useAudioEngine() {
   const [compressorRatio, setCompressorRatioState] = useState(20);
   const [chorusAmount, setChorusAmountState] = useState(0);
   const [stereoWidth, setStereoWidthState] = useState(1.0);
+  // 动态力度（人性化）：0 = 关闭，1 = 最大随机
+  const [humanizeVelocity, setHumanizeVelocity] = useState(0);
+  const humanizeVelocityRef = useRef(0);
+  useEffect(() => { humanizeVelocityRef.current = humanizeVelocity; }, [humanizeVelocity]);
+  // 丝滑音符（overlap）：0 = 关闭，1 = 最大重叠
+  const [noteOverlap, setNoteOverlap] = useState(0);
+  const noteOverlapRef = useRef(0);
+  useEffect(() => { noteOverlapRef.current = noteOverlap; }, [noteOverlap]);
   const [metronomeOn, setMetronomeOn] = useState(false);
   const metronomeOnRef = useRef(false);
   const bpmRef = useRef(120);
@@ -192,6 +215,25 @@ export function useAudioEngine() {
     eqLowRef.current = eqLow;
     eqMidRef.current = eqMid;
     eqHighRef.current = eqHigh;
+
+    // 动态 8 段参数 EQ（串联在 EQ 链后）
+    const eqBandNodes = [];
+    for (let i = 0; i < 8; i++) {
+      const band = ctx.createBiquadFilter();
+      band.type = 'peaking';
+      band.frequency.value = [60, 150, 400, 1000, 2500, 6000, 12000, 16000][i];
+      band.gain.value = 0;
+      band.Q.value = 1.0;
+      eqBandNodes.push(band);
+    }
+    // 串联 EQ 链：eqHigh → band0 → band1 → ... → band7 → compressor
+    let prevNode = eqHigh;
+    for (const band of eqBandNodes) {
+      prevNode.connect(band);
+      prevNode = band;
+    }
+    prevNode.connect(compressor);
+    eqBandsRef.current = eqBandNodes;
 
     master.connect(eqLow);
     eqLow.connect(eqMid);
@@ -623,6 +665,19 @@ export function useAudioEngine() {
     // worklet 未就绪时回退到合成器
     if (!workletReadyRef.current || !workletNodeRef.current) {
       return scheduleSynthNote(whenSec, pitch, duration, velocity, program, trackVol);
+    }
+
+    // 动态力度（人性化）：给 velocity 加随机微调
+    const humanize = humanizeVelocityRef.current;
+    if (humanize > 0 && !isDrum) {
+      const variation = (Math.random() - 0.5) * 2 * humanize * 10; // ±10 × humanize
+      velocity = Math.max(1, Math.min(127, Math.round(velocity + variation)));
+    }
+
+    // 丝滑音符：延长音符 duration 实现 overlap（消除断续感）
+    const overlap = noteOverlapRef.current;
+    if (overlap > 0 && !isDrum) {
+      duration = duration * (1 + overlap * 0.15); // 最多延长 15%
     }
 
     const midi = noteToMidi(pitch);
@@ -1200,6 +1255,27 @@ export function useAudioEngine() {
       setEqHighState(val);
       if (eqHighRef.current) eqHighRef.current.gain.value = val;
     },
+    // 动态 8 段参数 EQ
+    eqBands,
+    setEqBand: (index, params) => {
+      setEqBandsState(prev => {
+        const next = [...prev];
+        next[index] = { ...next[index], ...params };
+        const node = eqBandsRef.current[index];
+        if (node) {
+          if (params.gain != null) node.gain.value = params.gain;
+          if (params.freq != null) node.frequency.value = params.freq;
+          if (params.q != null) node.Q.value = params.q;
+        }
+        return next;
+      });
+    },
+    // 动态力度：播放时给 velocity 加随机微调（人性化）
+    humanizeVelocity,
+    setHumanizeVelocity,
+    // 丝滑音符：note overlap（音符间短暂重叠消除断续感）
+    noteOverlap,
+    setNoteOverlap,
     // 压缩器（-60 ~ 0 dB 阈值，1 ~ 20 比率）
     compressorThreshold,
     setCompressorThreshold: (val) => {
@@ -1356,7 +1432,7 @@ export function useAudioEngine() {
     analyserNodeRef,
   }), [playNote, startPlayback, stopPlayback, pausePlayback, resumePlayback,
       isPlaying, isPaused, currentTime, totalDuration, getPlaybackTime, seekTo,
-      reverbSend, delaySend, delayTime, delayFeedback, eqLow, eqMid, eqHigh, compressorThreshold, compressorRatio, chorusAmount, stereoWidth, soundSource, metronomeOn,
+      reverbSend, delaySend, delayTime, delayFeedback, eqLow, eqMid, eqHigh, eqBands, humanizeVelocity, noteOverlap, compressorThreshold, compressorRatio, chorusAmount, stereoWidth, soundSource, metronomeOn,
       bufferSize, initAudio, setSoundSource, setBufferSize, masterVolume]);
   // H1 修复：performanceInfo 移出 useMemo deps，避免全 App re-render 链
   return { ...engine, performanceInfo };

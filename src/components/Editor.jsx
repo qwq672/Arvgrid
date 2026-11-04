@@ -25,7 +25,7 @@ const Editor = memo(({
     undo, redo, setCurrentTrackId,
   } = project;
 
-  const { playNote, reverbSend, setReverbSend, delaySend, setDelaySend, delayTime, setDelayTime, delayFeedback, setDelayFeedback, eqLow, setEqLow, eqMid, setEqMid, eqHigh, setEqHigh, compressorThreshold, setCompressorThreshold, compressorRatio, setCompressorRatio, chorusAmount, setChorusAmount, stereoWidth, setStereoWidth } = audioEngine;
+  const { playNote, reverbSend, setReverbSend, delaySend, setDelaySend, delayTime, setDelayTime, delayFeedback, setDelayFeedback, eqLow, setEqLow, eqMid, setEqMid, eqHigh, setEqHigh, eqBands, setEqBand, humanizeVelocity, setHumanizeVelocity, noteOverlap, setNoteOverlap, compressorThreshold, setCompressorThreshold, compressorRatio, setCompressorRatio, chorusAmount, setChorusAmount, stereoWidth, setStereoWidth } = audioEngine;
   const currentTrack = tracks.find(t => t.id === currentTrackId);
   const [editMode, setEditMode] = useState('pointer');
   const [quantizeValue, setQuantizeValue] = useState('1/4');
@@ -162,7 +162,7 @@ const Editor = memo(({
         // 感叹号指示器：传具体改动的效果列表
         effectsWarnings={() => {
           const warnings = [];
-          if (eqLow !== 0 || eqMid !== 0 || eqHigh !== 0) {
+          if (eqLow !== 0 || eqMid !== 0 || eqHigh !== 0 || (eqBands && eqBands.some(b => b.gain !== 0))) {
             warnings.push(lang === 'zh' ? '全局均衡器 (EQ)' : lang === 'ja' ? 'グローバル EQ' : lang === 'ko' ? '글로벌 EQ' : 'Global EQ');
           }
           if (reverbSend !== 0.08) {
@@ -179,6 +179,12 @@ const Editor = memo(({
           }
           if (stereoWidth !== 1.0) {
             warnings.push(lang === 'zh' ? '立体声宽度 (Stereo Width)' : lang === 'ja' ? 'ステレオ幅' : lang === 'ko' ? '스테레오 폭' : 'Stereo Width');
+          }
+          if (humanizeVelocity !== 0) {
+            warnings.push(lang === 'zh' ? '动态力度 (Humanize)' : 'Humanize Velocity');
+          }
+          if (noteOverlap !== 0) {
+            warnings.push(lang === 'zh' ? '丝滑音符 (Note Overlap)' : 'Note Overlap');
           }
           // 检查单音轨效果器
           for (const t of tracks) {
@@ -318,6 +324,10 @@ const Editor = memo(({
         delaySend={delaySend} onDelaySendChange={setDelaySend}
         delayTime={delayTime} onDelayTimeChange={setDelayTime}
         delayFeedback={delayFeedback} onDelayFeedbackChange={setDelayFeedback}
+        // 动态 EQ + 人性化 + 丝滑
+        eqBands={eqBands} onEqBandChange={setEqBand}
+        humanizeVelocity={humanizeVelocity} onHumanizeVelocityChange={setHumanizeVelocity}
+        noteOverlap={noteOverlap} onNoteOverlapChange={setNoteOverlap}
         audioCtxRef={audioEngine.audioCtxRef}
       />
       <MidiInfoModal

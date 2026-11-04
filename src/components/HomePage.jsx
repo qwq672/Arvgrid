@@ -186,6 +186,9 @@ export default function HomePage({
         delaySend={0.1} onDelaySendChange={() => {}}
         delayTime={0.3} onDelayTimeChange={() => {}}
         delayFeedback={0.2} onDelayFeedbackChange={() => {}}
+        eqBands={null} onEqBandChange={() => {}}
+        humanizeVelocity={0} onHumanizeVelocityChange={() => {}}
+        noteOverlap={0} onNoteOverlapChange={() => {}}
         audioCtxRef={null}
       />
     </div>
