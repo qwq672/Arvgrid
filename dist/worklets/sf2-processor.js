@@ -250,12 +250,35 @@ class SF2Processor extends AudioWorkletProcessor {
       for (let i = blockStartOffset; i < blockSize; i++) {
         if (state === 'done') break;
 
-        // 循环点处理
+        // 循环点处理（仅在 attack/decay/sustain 阶段循环；release 阶段不循环避免读取到 sample 末尾后被截断）
         if (!inRelease && hasLoop && position >= loopEnd && loopEnd > loopStart) {
           const loopLen = loopEnd - loopStart;
           position = loopStart + ((position - loopStart) % loopLen);
         }
-        if (position >= srcLen) { state = 'done'; break; }
+        // 关键修复（顿感 bug）：到达 srcLen 时不要立刻 state='done'
+        // 如果还在 release 阶段，让 position 停在 srcLen 继续走 release 包络
+        // 如果不在 release，就立刻进入 release 而非直接静音
+        if (position >= srcLen) {
+          if (isDrum) { state = 'done'; break; }
+          if (!inRelease) {
+            // 进入 release：用当前 env 作为 releaseStartGain
+            inRelease = true;
+            // releaseStartGain 取当前 sustain 值（保守估算）
+            if (elapsed < attackSamples) {
+              releaseStartGain = elapsed * invAttack * peak;
+            } else if (elapsed < attackSamples + holdSamples) {
+              releaseStartGain = peak;
+            } else if (decaySamples > 0 && elapsed < attackSamples + holdSamples + decaySamples) {
+              const decayT = (elapsed - attackSamples - holdSamples) / decaySamples;
+              releaseStartGain = peak + (sustainLevel * peak - peak) * decayT;
+            } else {
+              releaseStartGain = sustainLevel * peak;
+            }
+            elapsed = 0;
+          }
+          // 钳住 position 不再前进，让 release 包络完成
+          position = srcLen > 0 ? srcLen - 1 : 0;
+        }
 
         // 线性插值
         const idx = position | 0;
@@ -281,9 +304,13 @@ class SF2Processor extends AudioWorkletProcessor {
               releaseStartGain = elapsed * invAttack * peak;
             } else if (elapsed < attackSamples + holdSamples) {
               releaseStartGain = peak;
-            } else if (elapsed < attackSamples + holdSamples + decaySamples) {
-              const decayT = (elapsed - attackSamples - holdSamples) * (1 / Math.max(decaySamples, 1));
-              releaseStartGain = peak + (sustainLevel * peak - peak) * decayT;
+            } else if (decaySamples > 0 && elapsed < attackSamples + holdSamples + decaySamples) {
+              // 顿感 bug 修复：之前用 1/Math.max(decaySamples,1)，当 decaySamples=0 时
+              // decayT = elapsed-attack-hold（巨大值）→ releaseStartGain 爆表
+              // 改为：decaySamples > 0 才走 decay 分支，否则直接用 sustainLevel
+              const decayT = (elapsed - attackSamples - holdSamples) / decaySamples;
+              const clampedT = decayT > 1 ? 1 : (decayT < 0 ? 0 : decayT);
+              releaseStartGain = peak + (sustainLevel * peak - peak) * clampedT;
             } else {
               releaseStartGain = sustainLevel * peak;
             }
@@ -295,8 +322,8 @@ class SF2Processor extends AudioWorkletProcessor {
               env = elapsed * invAttack * peak;
             } else if (elapsed < attackSamples + holdSamples) {
               env = peak;
-            } else if (elapsed < attackSamples + holdSamples + decaySamples) {
-              const decayT = (elapsed - attackSamples - holdSamples) * (1 / Math.max(decaySamples, 1));
+            } else if (decaySamples > 0 && elapsed < attackSamples + holdSamples + decaySamples) {
+              const decayT = (elapsed - attackSamples - holdSamples) / decaySamples;
               env = peak + (sustainLevel * peak - peak) * decayT;
             } else {
               env = sustainLevel * peak;
@@ -325,7 +352,13 @@ class SF2Processor extends AudioWorkletProcessor {
         out0[i] += out;
         if (stereo) out1[i] += out;
 
-        position += rateRatio;
+        // 关键修复：release 阶段若 position 超出 srcLen，钳住不前进
+        // 这样 release 包络完整衰减，不会因 sample 用尽突然静音（顿感 bug）
+        // 非 release 阶段正常前进
+        if (position < srcLen) {
+          position += rateRatio;
+        }
+        // 如果 release 中超出了 srcLen，上面 if 已钳住
         elapsed++;
       }
 

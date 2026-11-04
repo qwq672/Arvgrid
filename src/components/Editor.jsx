@@ -376,6 +376,10 @@ const Editor = memo(({
         autoDuration={autoDuration}
         getPlaybackTime={audioEngine.getPlaybackTime}
         isPlaying={audioEngine.isPlaying}
+        // 桌面端原生音频设备
+        listOutputDevices={audioEngine.listOutputDevices}
+        switchOutputDevice={audioEngine.switchOutputDevice}
+        isNativeAudio={audioEngine.isNativeAudio}
       />
       <MidiInfoModal
         open={midiInfoOpen}

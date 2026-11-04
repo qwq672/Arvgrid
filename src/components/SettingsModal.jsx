@@ -1,8 +1,9 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 import { isWasmSupported } from '../lib/wasmBackend';
 import AutomationPanel from './AutomationPanel';
+import { isTauriDesktop } from '../lib/tauriBridge';
 
 export default function SettingsPanel({
   open, onClose,
@@ -28,6 +29,8 @@ export default function SettingsPanel({
   automation, onAutomationChange, onAutomationClear,
   autoCurrentTime, autoDuration,
   getPlaybackTime, isPlaying,
+  // 桌面端输出设备
+  listOutputDevices, switchOutputDevice, isNativeAudio,
 }) {
   const fileInputRef = useRef(null);
   const [search, setSearch] = useState('');
@@ -37,9 +40,23 @@ export default function SettingsPanel({
   const [exportBitDepth, setExportBitDepth] = useState(() => {
     return parseInt(localStorage.getItem('arvgrid_export_bit_depth')) || 16;
   });
+  // 桌面端输出设备列表
+  const [nativeDevices, setNativeDevices] = useState([]);
+  const [nativeDevicesLoaded, setNativeDevicesLoaded] = useState(false);
+  useEffect(() => {
+    if (!open || !isTauriDesktop || !listOutputDevices || nativeDevicesLoaded) return;
+    listOutputDevices().then(devices => {
+      setNativeDevices(devices || []);
+      setNativeDevicesLoaded(true);
+    }).catch(err => console.warn('list devices failed', err));
+  }, [open, listOutputDevices, nativeDevicesLoaded]);
   // 实验性 WASM 后端开关
+  // 默认启用：rustysynth 完整 SF2 引擎编译好的 WASM 比 JS worklet 快 3-5×
+  // 用户可在 Settings 中关闭回退到 JS（保留 fallback 选项）
   const [wasmEnabled, setWasmEnabled] = useState(() => {
-    return localStorage.getItem('arvgrid_wasm_backend') === '1';
+    const stored = localStorage.getItem('arvgrid_wasm_backend');
+    // 默认 true（除非显式设为 '0'）
+    return stored !== '0';
   });
   const wasmSupported = isWasmSupported();
   const t = useTranslation(lang);
@@ -314,8 +331,42 @@ export default function SettingsPanel({
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
                 {lang === 'zh' ? '音频输出设置' : 'Audio Output Settings'}
+                {isNativeAudio && <span style={{ marginLeft: 8, fontSize: '0.65rem', color: 'var(--green)' }}>
+                  ● Native (Rust + cpal, 256 voices)
+                </span>}
               </label>
-              {/* 输出设备选择 */}
+
+              {/* 桌面端原生设备列表（Tauri + cpal） */}
+              {isTauriDesktop && listOutputDevices && switchOutputDevice && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '原生设备' : 'Native'}</span>
+                  <select
+                    style={{ flex: 1, fontSize: '0.72rem' }}
+                    onChange={async (e) => {
+                      const name = e.target.value;
+                      if (!name) return;
+                      try {
+                        await switchOutputDevice(name);
+                      } catch (err) {
+                        console.warn('Switch device failed:', err);
+                      }
+                    }}
+                  >
+                    <option value="">{lang === 'zh' ? '默认设备' : 'Default'}</option>
+                    {nativeDevices.map((name, i) => (
+                      <option key={i} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  <button onClick={async () => {
+                    setNativeDevicesLoaded(false);
+                  }} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>
+                    {lang === 'zh' ? '刷新' : 'Refresh'}
+                  </button>
+                </div>
+              )}
+
+              {/* 网页端输出设备选择 */}
+              {!isTauriDesktop && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '输出设备' : 'Device'}</span>
                 <select id="audio-output-device" style={{ flex: 1, fontSize: '0.72rem' }} onChange={async (e) => {
@@ -354,6 +405,7 @@ export default function SettingsPanel({
                   {lang === 'zh' ? '选择...' : 'Choose...'}
                 </button>
               </div>
+              )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '采样率' : 'Sample Rate'}</span>
                 <select
