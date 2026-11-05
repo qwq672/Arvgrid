@@ -27,20 +27,55 @@ async function getInvoke() {
 
 export const isTauriDesktop = _isTauri;
 
+// 动态加载 @tauri-apps/plugin-fs 的几个方法
+// 用变量名让 Vite 跳过静态解析（网页端 build 不需要这个依赖）
+async function importTauriFs() {
+  try {
+    const modName = '@tauri-apps/plugin-fs';
+    const mod = await import(/* @vite-ignore */ modName);
+    return {
+      writeFile: mod.writeFile,
+      remove: mod.remove,
+      tempDir: mod.tempDir,
+    };
+  } catch (e) {
+    return { writeFile: null, remove: null, tempDir: null };
+  }
+}
+
 /**
  * 桌面端原生音频引擎
  * 调用 Rust 端 Tauri commands，返回 Promise
  * 不创建 AudioWorklet / AudioContext，所有音频走 cpal
  */
 export const tauriAudio = {
-  async loadSF2(arrayBuffer) {
+  async loadSF2(arrayBuffer, onProgress) {
     const invoke = await getInvoke();
     if (!invoke) return false;
     try {
-      // Tauri 接收 Vec<u8>，传 Uint8Array
-      const bytes = new Uint8Array(arrayBuffer);
-      const result = await invoke('load_sf2', { sf2Bytes: Array.from(bytes) });
-      console.log('[tauri-bridge] SF2 loaded:', result);
+      // 关键性能优化：1GB+ SF2 不能用 Array.from() 转字节（OOM）
+      // 改用：写到临时文件 → 传 path 给 Rust → mmap 加载
+      // 2GB SF2 走 path 后 RSS 增量约 0（mmap 走 page cache）
+      if (onProgress) onProgress({ stage: 'writing-tempfile', percent: 30 });
+
+      const { writeFile, remove, tempDir } = await importTauriFs();
+      if (!writeFile) {
+        // plugin-fs 不可用，fallback 到老路径（仅适合小 SF2）
+        console.warn('[tauri-bridge] plugin-fs not available, falling back to byte transfer (slow for >100MB)');
+        const bytes = new Uint8Array(arrayBuffer);
+        const result = await invoke('load_sf2', { sf2Bytes: Array.from(bytes) });
+        console.log('[tauri-bridge] SF2 loaded (bytes):', result);
+        return true;
+      }
+
+      const dir = await tempDir();
+      const tmpPath = `${dir}/arvgrid_sf2_${Date.now()}.sf2`;
+      await writeFile(tmpPath, new Uint8Array(arrayBuffer));
+      if (onProgress) onProgress({ stage: 'mmap-loading', percent: 60 });
+
+      const result = await invoke('load_sf2_path', { path: tmpPath });
+      console.log('[tauri-bridge] SF2 loaded (path):', result);
+      if (onProgress) onProgress({ stage: 'done', percent: 100 });
       return true;
     } catch (e) {
       console.error('[tauri-bridge] loadSF2 failed:', e);

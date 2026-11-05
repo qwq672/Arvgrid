@@ -1759,14 +1759,16 @@ export function useAudioEngine() {
       // 走原本的 loadSF2 闭包
       return engine.loadSF2(arrayBuffer, onProgress);
     }
-    // 桌面端：先调 Rust 加载（cpal 流 + 256 复音）
-    const tauriOk = await tauriAudio.loadSF2(arrayBuffer);
+    // 桌面端：先调 Rust 加载（cpal 流 + 256 复音 + mmap 大文件支持）
+    // 大文件路径走 mmap，RSS 增量约 0；小文件直接走 bytes 也可
+    const tauriOk = await tauriAudio.loadSF2(arrayBuffer, onProgress);
     if (!tauriOk) {
       // Rust 失败，回退到 JS worklet
       console.warn('[tauri-bridge] Rust loadSF2 failed, falling back to JS worklet');
       return engine.loadSF2(arrayBuffer, onProgress);
     }
     // 同步加载 JS 端 sf2Data（用于导出音频路径）
+    // 注意：大文件（>500MB）JS parseSF2 可能会卡，但只有导出时用
     try {
       if (onProgress) onProgress({ stage: 'parsing', percent: 50 });
       await initAudio();

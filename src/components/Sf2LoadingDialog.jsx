@@ -34,6 +34,12 @@ export default function Sf2LoadingDialog({ progress, lang = 'zh' }) {
     if (progress.stage === 'wasm-compiling') return t.wasmCompiling;
     if (progress.stage === 'wasm-ready') return t.wasmReady;
     if (progress.stage === 'wasm-fallback') return t.wasmFallback;
+    // 桌面端原生路径：mmap 加载 SF2
+    if (progress.stage === 'writing-tempfile') return lang === 'zh' ? '正在写临时文件…' : 'Writing temp file...';
+    if (progress.stage === 'mmap-loading') return lang === 'zh' ? '正在 mmap 加载 SF2…' : 'mmap loading SF2...';
+    if (progress.backend === 'tauri-native') {
+      return `${t.sf2LoadingDone} (Native + mmap)`;
+    }
     return t.exportProcessing;
   })();
 

@@ -143,7 +143,14 @@ export default function App() {
         setHasUnsavedChanges(false);
       }
       const arrayBuffer = await file.arrayBuffer();
+      // 大 MIDI 文件提示
+      if (arrayBuffer.byteLength > 500_000) {
+        // 让 UI 先更新一下（提示用户正在解析）
+        setSf2LoadingProgress({ stage: 'parsing', percent: 0 });
+        await new Promise(r => setTimeout(r, 50));
+      }
       const midiData = await parseMidiFile(arrayBuffer);
+      setSf2LoadingProgress(null);
       project.importMidiData(midiData);
       setHasUnsavedChanges(false);
       setShowHome(false);

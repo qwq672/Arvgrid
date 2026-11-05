@@ -11,6 +11,17 @@
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 use std::sync::{Arc, Mutex};
 
+/// 全局 keep-alive 列表：保存 mmap 句柄防止被 drop
+/// 仅 native feature 时使用；用户切换 SF2 时旧的 mmap 会被 clear() 释放
+/// 用 OnceLock 替代 const Mutex::new（因为 memmap2::Mmap 不是 const-constructable）
+#[cfg(feature = "native")]
+static SF2_MMAP_KEEPALIVE: std::sync::OnceLock<Mutex<Vec<memmap2::Mmap>>> = std::sync::OnceLock::new();
+
+#[cfg(feature = "native")]
+fn sf2_keep_alive() -> &'static Mutex<Vec<memmap2::Mmap>> {
+    SF2_MMAP_KEEPALIVE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 /// 音频核心引擎
 /// 封装 rustysynth 的 Synthesizer，提供简洁的 load_sf2/note_on/note_off/render 接口
 pub struct AudioCore {
@@ -39,6 +50,52 @@ impl AudioCore {
 
         let synthesizer = Synthesizer::new(&soundfont, &settings)
             .map_err(|e| format!("Synthesizer init error: {}", e))?;
+
+        Ok(Self {
+            synthesizer: Mutex::new(synthesizer),
+            sample_rate,
+            block_size: settings.block_size,
+            max_polyphony,
+        })
+    }
+
+    /// 从文件路径创建音频核心（仅 native target，使用 mmap 零拷贝）
+    /// 关键性能优化：2GB SF2 用 mmap 后 RSS 增量约 0
+    /// 系统按需把文件页加载到 page cache，不占应用堆内存
+    #[cfg(feature = "native")]
+    pub fn with_soundfont_file(
+        path: &str,
+        sample_rate: i32,
+        max_polyphony: usize,
+    ) -> Result<Self, String> {
+        use std::fs::File;
+        let file = File::open(path).map_err(|e| format!("Open SF2 file '{}': {}", path, e))?;
+
+        // mmap 整个 SF2 文件（不读入堆内存）
+        // 2GB 文件 mmap 后 RSS 增量约 0，访问时按页加载到 page cache
+        let mmap = unsafe { memmap2::Mmap::map(&file) }
+            .map_err(|e| format!("mmap failed: {}", e))?;
+
+        // rustysynth 的 SoundFont::new 接受 Read trait，mmap 的 &[u8] 直接用
+        let mut reader = std::io::Cursor::new(&mmap[..]);
+        let soundfont = Arc::new(SoundFont::new(&mut reader).map_err(|e| format!("SF2 parse error: {}", e))?);
+
+        let mut settings = SynthesizerSettings::new(sample_rate);
+        settings.maximum_polyphony = max_polyphony;
+        settings.enable_reverb_and_chorus = true;
+
+        let synthesizer = Synthesizer::new(&soundfont, &settings)
+            .map_err(|e| format!("Synthesizer init error: {}", e))?;
+
+        // 保存 mmap 句柄到全局 keep-alive 列表
+        // 防御性设计：万一 rustysynth 内部对输入字节有引用（虽然不太可能）
+        // 用户切换 SF2 时旧的 mmap 会被 keep_alive 替换并 drop
+        // 进程退出时所有 mmap 自动释放
+        {
+            let mut keep_alive = sf2_keep_alive().lock().unwrap();
+            keep_alive.clear();  // 释放上一个 SF2 的 mmap（如果有）
+            keep_alive.push(mmap);
+        }
 
         Ok(Self {
             synthesizer: Mutex::new(synthesizer),

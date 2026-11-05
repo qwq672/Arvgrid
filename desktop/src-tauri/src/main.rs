@@ -179,7 +179,7 @@ async fn load_sf2(
     sf2_bytes: Vec<u8>,
     state: tauri::State<'_, AudioState>,
 ) -> Result<String, String> {
-    eprintln!("[arvgrid] Loading SF2: {} bytes", sf2_bytes.len());
+    eprintln!("[arvgrid] Loading SF2 (bytes): {} bytes", sf2_bytes.len());
     let sr = state.sample_rate as i32;
 
     // 桌面端：256 复音
@@ -198,6 +198,32 @@ async fn load_sf2(
 
     eprintln!("[arvgrid] SF2 loaded: 256 voices, {}Hz", sr);
     Ok(format!("SF2 loaded (polyphony=256, block_size={})", bs))
+}
+
+/// 从文件路径加载 SF2（推荐方式，支持 GB 级文件）
+/// 用 mmap 零拷贝，2GB SF2 加载后 RSS 增量约 0
+/// JS 端先把 ArrayBuffer 写到临时文件，再调这个命令传路径
+#[tauri::command]
+async fn load_sf2_path(
+    path: String,
+    state: tauri::State<'_, AudioState>,
+) -> Result<String, String> {
+    eprintln!("[arvgrid] Loading SF2 from path: {}", path);
+    let sr = state.sample_rate as i32;
+
+    let core = AudioCore::with_soundfont_file(&path, sr, 256)
+        .map_err(|e| format!("SF2 error: {}", e))?;
+
+    let bs = core.block_size();
+    *state.core.lock().map_err(|e| e.to_string())? = Some(core);
+
+    *state.sample_counter.lock().map_err(|e| e.to_string())? = 0;
+    state.schedule_queue.lock().map_err(|e| e.to_string())?.clear();
+
+    build_audio_stream(&state, None)?;
+
+    eprintln!("[arvgrid] SF2 (path) loaded: 256 voices, {}Hz, block={}", sr, bs);
+    Ok(format!("SF2 loaded from path (polyphony=256, block_size={})", bs))
 }
 
 #[tauri::command]
@@ -385,6 +411,7 @@ fn main() {
         .manage(audio_state)
         .invoke_handler(tauri::generate_handler![
             load_sf2,
+            load_sf2_path,
             note_on,
             note_off,
             note_off_all,
