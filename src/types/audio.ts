@@ -68,7 +68,7 @@ export interface ExportOptions {
 export interface ExportProgress {
   current: number;
   total: number;
-  stage: 'rendering' | 'encoding' | 'complete';
+  stage: 'rendering' | 'encoding' | 'finalizing' | 'complete';
 }
 
 // 音频引擎相关类型定义

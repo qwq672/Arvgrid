@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useProject, loadAutosave, clearAutosave, getRecentProjects } from './hooks/useProject';
+import { useProject, loadAutosave, clearAutosave, getRecentProjects, clearAllRecentProjects } from './hooks/useProject';
 import { useAudioEngine } from './hooks/useAudioEngine';
 import { useAutoSave } from './hooks/useAutoSave';
 import HomePage from './components/HomePage';
@@ -347,6 +347,7 @@ export default function App() {
             applyUiScale(val);
           }}
           onClearCache={handleClearCache}
+          onClearRecent={() => { clearAllRecentProjects(); setRecentProjects([]); }}
           onResetSettings={handleResetSettings}
           pendingAutosave={pendingAutosave}
           onRecoverAutosave={handleRecoverAutosave}

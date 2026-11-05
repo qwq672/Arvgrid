@@ -189,12 +189,15 @@ const MixerView = memo(function MixerView({
           }} />
         </div>
 
-        {/* 音量数值 */}
+        {/* 音量数值：0-100 线性映射到 -20~0 dB，统一补零成两位宽度 */}
         <div style={{
           fontSize: '0.6rem', color: 'var(--text-muted)', textAlign: 'center',
           fontVariantNumeric: 'tabular-nums',
         }}>
-          {Math.round(vol * 0.7 * 100) / 100 < 10 ? '0' : ''}{Math.round((vol / 100) * 20 - 20)}dB
+          {(() => {
+            const db = Math.round((vol / 100) * 20 - 20);
+            return (db === 0 ? '00' : db > -10 ? '-0' + (-db) : String(db)) + 'dB';
+          })()}
         </div>
       </div>
     );

@@ -3,7 +3,7 @@ import { saveAutosave, addRecentProject } from './useProject';
 
 // 自动保存优化：
 // - 大工程跳过自动保存（localStorage 5MB 限制 + JSON.stringify 阻塞主线程）
-// - 用 "note count + bpm + meta.title" 作为 fingerprint 比较是否变化
+// - 用 "note count + 内容校验和 + bpm + meta.title" 作为 fingerprint 比较是否变化
 //   避免每次都 JSON.stringify 整个 50 万音符工程
 // - 大工程的保存建议用户手动用 Ctrl+S（导出为 JSON 文件）
 
@@ -19,14 +19,26 @@ export function useAutoSave(getProjectData, autoSaveMode) {
     const data = getProjectData();
     if (!data) return;
 
-    // 计算 fingerprint：用音符总数 + bpm + 标题，不序列化整个数据
+    // 计算 fingerprint：音符总数 + 内容轻量校验和 + bpm + 标题，不序列化整个数据
+    // v2: 校验和加入 startSec/durationSec/velocity/pitch，
+    //     修复"只改音高或力度（音符数不变）时自动保存被跳过"的漏洞
     let noteCount = 0;
+    let noteChecksum = 0;
     if (data.tracks) {
       for (const t of data.tracks) {
-        if (t.notes) noteCount += t.notes.length;
+        if (!t.notes) continue;
+        noteCount += t.notes.length;
+        for (let i = 0; i < t.notes.length; i++) {
+          const n = t.notes[i];
+          noteChecksum += (n.startSec || 0) + (n.durationSec || 0) + (n.velocity || 0);
+          if (typeof n.pitch === 'number') noteChecksum += n.pitch;
+          else if (typeof n.pitch === 'string') {
+            for (let j = 0; j < n.pitch.length; j++) noteChecksum += n.pitch.charCodeAt(j);
+          }
+        }
       }
     }
-    const fingerprint = `${noteCount}|${data.bpm}|${data.meta?.title || ''}|${data.currentTrackId}`;
+    const fingerprint = `${noteCount}|${Math.round(noteChecksum)}|${data.bpm}|${data.meta?.title || ''}|${data.currentTrackId}`;
 
     // 大工程跳过 localStorage 自动保存
     if (noteCount > AUTOSAVE_NOTE_LIMIT) {

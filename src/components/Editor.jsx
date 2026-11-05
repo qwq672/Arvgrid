@@ -160,7 +160,13 @@ const Editor = memo(({
       else if (ctrl && shift && e.key === 'z') { e.preventDefault(); redo(); }
       else if (ctrl && !shift && e.key === 'e') { e.preventDefault(); onExportMidi(); }
       else if (ctrl && shift && e.key === 'i') { e.preventDefault(); handleImportMidi(); }
-      else if (e.key === ' ') { e.preventDefault(); if (audioEngine.isPlaying) { audioEngine.pausePlayback(); } else { audioEngine.startPlayback(tracks, bpm); } }
+      else if (e.key === ' ') {
+        e.preventDefault();
+        // 三态：播放中→暂停；暂停中→继续；停止→从头播放
+        if (audioEngine.isPlaying && audioEngine.isPaused) { audioEngine.resumePlayback(tracks, bpm); }
+        else if (audioEngine.isPlaying) { audioEngine.pausePlayback(); }
+        else { audioEngine.startPlayback(tracks, bpm); }
+      }
       else if (e.key === 'Escape') { e.preventDefault(); audioEngine.stopPlayback(); }
       else if (e.key === '1') { e.preventDefault(); setEditMode('pointer'); }
       else if (e.key === '2') { e.preventDefault(); setEditMode('select'); }
@@ -196,7 +202,7 @@ const Editor = memo(({
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onNewProject, handleImportMidi, onSaveProject, onExportMidi, undo, redo, audioEngine.isPlaying, audioEngine, tracks, bpm, currentTrackId, updateTrack]);
+  }, [onNewProject, handleImportMidi, onSaveProject, onExportMidi, undo, redo, audioEngine.isPlaying, audioEngine.isPaused, audioEngine, tracks, bpm, currentTrackId, updateTrack]);
 
   return (
     <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -356,6 +362,7 @@ const Editor = memo(({
             onSoloToggle={(id) => { const t = tracks.find(tr => tr.id === id); updateTrack(id, { solo: !t.solo }); }}
             onProgramChange={(id, prog) => updateTrack(id, { program: prog })}
             onEffectsChange={(id, effects) => updateTrack(id, { effects })}
+            onTrackReverbChange={handleOnTrackReverbChange}
             onOpenInstrumentPicker={(id) => {
               // 复用 TrackPanel 的 instPanel 机制：派发事件
               window.dispatchEvent(new CustomEvent('arvgrid-open-instrument-picker', { detail: { id } }));
@@ -487,7 +494,7 @@ const Editor = memo(({
             {/* 版本徽章 */}
             <div style={{ textAlign: 'center', paddingBottom: 16 }}>
               <span style={{ display: 'inline-block', color: 'var(--accent)', fontSize: '0.72rem', fontWeight: 600, padding: '3px 12px', borderRadius: 20, border: '1px solid var(--accent)' }}>
-                v261005
+                v261106
               </span>
               <span style={{ marginLeft: 8, fontSize: '0.68rem', color: 'var(--text-muted)' }}>MIT License</span>
             </div>

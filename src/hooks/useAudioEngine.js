@@ -6,7 +6,13 @@ import { AUTOMATION_PARAMS, AUTOMATION_PARAM_MAP, sampleAutomation } from '../li
 import { isTauriDesktop, tauriAudio } from '../lib/tauriBridge';
 
 // WASM 后端开关（默认开启，失败自动 fallback 到 JS worklet）
-const WASM_ENABLED = true;
+// v11: 读取 Settings 面板写入的 localStorage 键，让开关真正生效（需刷新页面）
+let WASM_ENABLED = true;
+try {
+  if (typeof localStorage !== 'undefined' && localStorage.getItem('arvgrid_wasm_backend') === '0') {
+    WASM_ENABLED = false;
+  }
+} catch (e) { /* localStorage 不可用时保持默认 */ }
 
 // 前瞻调度器默认参数
 const MAX_POLYPHONY = 32; // 复音数上限（仅限主线程合成器路径）
@@ -376,7 +382,7 @@ export function useAudioEngine() {
     if (WASM_ENABLED && isWasmSupported()) {
       try {
         console.log('[arvgrid WASM] Step 1: loading wasm-sf2-processor.js module...');
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=9', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=10', location.href).href;
         console.log('[arvgrid WASM] worklet URL:', workletUrl);
         await ctx.audioWorklet.addModule(workletUrl);
         console.log('[arvgrid WASM] Step 2: module loaded, creating AudioWorkletNode...');
@@ -1103,6 +1109,12 @@ export function useAudioEngine() {
       clearTimeout(playIntervalRef.current);
       playIntervalRef.current = null;
     }
+    // 清理播放中拖动进度条的挂起状态与自动恢复计时器
+    seekDragRef.current = false;
+    if (seekResumeTimerRef.current) {
+      clearTimeout(seekResumeTimerRef.current);
+      seekResumeTimerRef.current = null;
+    }
     if (schedulerTimerRef.current) {
       clearTimeout(schedulerTimerRef.current);
       schedulerTimerRef.current = null;
@@ -1366,11 +1378,46 @@ export function useAudioEngine() {
     schedulerTimerRef.current = setTimeout(runScheduler, schedulerMsRef.current);
     // 恢复自动化 rAF 循环
     startAutomationLoop();
-  }, [runScheduler, startAutomationLoop]);
 
+    // 重启播放结束检查链：暂停时 checkPlaybackEnd 检测到 isPaused 会直接 return，
+    // setTimeout 链会断掉，恢复后必须重新挂上，否则曲子播完不会自动停止
+    const total = totalDurationRef.current;
+    const checkEnd = () => {
+      if (!isPlayingRef.current || isPausedRef.current) return;
+      const elapsed = ctx.currentTime - startTimeRef.current;
+      if (elapsed >= total + 0.5) {
+        stopPlayback();
+      } else {
+        playIntervalRef.current = setTimeout(checkEnd, 500);
+      }
+    };
+    playIntervalRef.current = setTimeout(checkEnd, 500);
+  }, [runScheduler, startAutomationLoop, stopPlayback]);
+
+  // 播放中拖动进度条状态：拖动开始时立即暂停，停止拖动 250ms 后自动恢复
+  const seekDragRef = useRef(false);
+  const seekResumeTimerRef = useRef(null);
   const seekTo = (time) => {
     setCurrentTime(time);
+    if (isPlayingRef.current && !isPausedRef.current) {
+      // 播放中开始拖动：立即暂停切断已调度的事件
+      // （旧逻辑只改 pauseTimeRef，播放中 getPlaybackTime 走 ctx.currentTime 计算，拖动会回弹）
+      pausePlayback();
+      seekDragRef.current = true;
+    }
     pauseTimeRef.current = time;
+    if (seekDragRef.current) {
+      // 拖动态：每次拖动重置自动恢复计时器；250ms 无新 seek 视为拖动结束
+      if (seekResumeTimerRef.current) clearTimeout(seekResumeTimerRef.current);
+      seekResumeTimerRef.current = setTimeout(() => {
+        seekResumeTimerRef.current = null;
+        const wasDragging = seekDragRef.current;
+        seekDragRef.current = false;
+        // 拖动期间用户手动停止/暂停了，就不再自动恢复
+        if (!wasDragging || !isPlayingRef.current || isPausedRef.current) return;
+        resumePlayback(null, bpmRef.current);
+      }, 250);
+    }
   };
 
   useEffect(() => {

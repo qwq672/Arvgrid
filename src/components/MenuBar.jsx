@@ -280,7 +280,7 @@ const MenuBar = memo(function MenuBar({
                     </div>
                   )}
                   <div style={{ marginTop: 8, fontSize: '0.7rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                    {lang === 'zh' ? 'MIDI 格式仅保存音符数据，音频效果仅在播放/导出音频时生效。' : lang === 'ja' ? 'MIDI 形式は音符データのみを保存します。オーディオ効果は再生/オーディオ書き出し時にのみ有効です。' : lang === 'ko' ? 'MIDI 형식은音符 데이터만 저장합니다. 오디오 효과는 재생/오디오 내보내기 시에만 적용됩니다.' : 'MIDI format only stores note data. Audio effects apply only during playback/audio export.'}
+                    {lang === 'zh' ? 'MIDI 格式仅保存音符数据，音频效果仅在播放/导出音频时生效。' : lang === 'ja' ? 'MIDI 形式は音符データのみを保存します。オーディオ効果は再生/オーディオ書き出し時にのみ有効です。' : lang === 'ko' ? 'MIDI 형식은 음표 데이터만 저장합니다. 오디오 효과는 재생/오디오 내보내기 시에만 적용됩니다.' : 'MIDI format only stores note data. Audio effects apply only during playback/audio export.'}
                   </div>
                   <button onClick={() => setWarningOpen(false)} style={{ marginTop: 10, width: '100%' }}>
                     {lang === 'zh' ? '知道了' : lang === 'ja' ? '了解' : lang === 'ko' ? '확인' : 'Got it'}

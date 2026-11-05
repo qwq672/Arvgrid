@@ -65,12 +65,18 @@ export async function renderAudioBuffer(
   bpm: number,
   sf2Data: any,
   onProgress?: (progress: ExportProgress) => void,
-  quality: string = 'balanced'
+  quality: string = 'balanced',
+  sampleRateOverride?: number
 ): Promise<AudioBuffer> {
+  // Solo 逻辑与实时播放（useAudioEngine.startPlayback）保持一致：
+  // 有任一 solo 轨时只渲染 solo 轨，否则渲染全部非 mute 轨
+  const hasSolo = tracks.some((t: any) => t.solo);
+  const isTrackAudible = (t: any) => !t.mute && (!hasSolo || !!t.solo);
+
   // 计算总时长
   let maxTime = 0;
   tracks.forEach(track => {
-    if (track.mute) return;
+    if (!isTrackAudible(track)) return;
     if (!track.notes) return;
     for (let i = 0; i < track.notes.length; i++) {
       const note = track.notes[i];
@@ -85,8 +91,8 @@ export async function renderAudioBuffer(
 
   const totalDuration = maxTime + 1.0; // 加 1.0 秒余音
   const params = resolveQualityParams(quality);
-  const sampleRate = params.sampleRate;
-  const totalEvents = tracks.reduce((sum, t) => sum + (t.mute ? 0 : (t.notes?.length || 0)), 0);
+  const sampleRate = sampleRateOverride || params.sampleRate;
+  const totalEvents = tracks.reduce((sum, t) => sum + (isTrackAudible(t) ? (t.notes?.length || 0) : 0), 0);
   const totalSamples = Math.ceil(totalDuration * sampleRate);
 
   // 检查 OfflineAudioContext 支持的总样本数上限（Chrome ~4GB ArrayBuffer）
@@ -181,7 +187,7 @@ export async function renderAudioBuffer(
   // 收集所有音符事件
   const events: any[] = [];
   tracks.forEach(track => {
-    if (track.mute) return;
+    if (!isTrackAudible(track)) return;
     const trackVol = Math.max(0, Math.min(1, (track.volume ?? 80) / 100));
     track.notes.forEach((note: { pitch: string; startSec: number; durationSec: number; velocity: number }) => {
       events.push({
@@ -997,8 +1003,19 @@ export async function exportAudio(
   const quality = options.quality || 'balanced';
   const params = resolveQualityParams(quality);
 
+  // WAV 尊重设置面板（SettingsModal）持久化的自定义采样率/位深
+  // 其他格式（MP3/FLAC/AAC）仍用 quality 预设，避免 lamejs 等编码器不支持 96kHz
+  if (options.format === 'wav') {
+    try {
+      const sr = parseInt(localStorage.getItem('arvgrid_export_sample_rate') || '', 10);
+      if (sr === 22050 || sr === 44100 || sr === 48000 || sr === 96000) params.sampleRate = sr;
+      const bd = parseInt(localStorage.getItem('arvgrid_export_bit_depth') || '', 10);
+      if (bd === 8 || bd === 16 || bd === 24 || bd === 32) params.bitDepth = bd;
+    } catch (e) { /* localStorage 不可用时使用预设 */ }
+  }
+
   // 渲染音频缓冲区
-  const audioBuffer = await renderAudioBuffer(tracks, bpm, sf2Data, onProgress, quality);
+  const audioBuffer = await renderAudioBuffer(tracks, bpm, sf2Data, onProgress, quality, params.sampleRate);
 
   // 通知 UI 进入编码阶段
   if (onProgress) {

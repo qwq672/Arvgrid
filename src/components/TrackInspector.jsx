@@ -14,7 +14,7 @@ const TrackInspector = memo(function TrackInspector({
   track,
   onRename, onColorChange, onCommentChange,
   onVolumeChange, onPanChange, onMuteToggle, onSoloToggle,
-  onProgramChange, onEffectsChange,
+  onProgramChange, onEffectsChange, onTrackReverbChange,
   onOpenInstrumentPicker,
   lang = 'zh',
 }) {
@@ -155,7 +155,7 @@ const TrackInspector = memo(function TrackInspector({
           <InspRow label={lang === 'zh' ? '声相' : 'Pan'} value={panLabel(track.pan ?? 64)} min={0} max={127}
             onChange={v => onPanChange && onPanChange(track.id, Math.round(v))} current={track.pan ?? 64} />
           <InspRow label={lang === 'zh' ? '混响' : 'Rev'} value={`${track.reverb ?? 0}%`} min={0} max={100}
-            onChange={v => { /* 触发 onTrackReverbChange 走 onEffectsChange */ }} current={track.reverb ?? 0} />
+            onChange={v => onTrackReverbChange && onTrackReverbChange(track.id, Math.round(v))} current={track.reverb ?? 0} />
         </div>
 
         {/* 单轨效果器 */}

@@ -131,13 +131,18 @@ class WasmSf2Processor extends AudioWorkletProcessor {
       const remaining = [];
       for (let i = 0; i < this._pendingNotes.length; i++) {
         const n = this._pendingNotes[i];
-        if (n.whenSec <= blockEnd) {
+        if (n.isNoteOff) {
+          // note-off 事件：到期才触发，未到期保持等待
+          if (n.whenSec <= blockEnd) {
+            this.audioCore.note_off(n.channel, n.key);
+          } else {
+            remaining.push(n);
+          }
+        } else if (n.whenSec <= blockEnd) {
           this.audioCore.note_on(n.channel, n.key, n.velocity);
           if (n.noteOffTime != null) {
             remaining.push({ whenSec: n.noteOffTime, isNoteOff: true, channel: n.channel, key: n.key });
           }
-        } else if (n.isNoteOff && n.whenSec <= blockEnd) {
-          this.audioCore.note_off(n.channel, n.key);
         } else {
           remaining.push(n);
         }
