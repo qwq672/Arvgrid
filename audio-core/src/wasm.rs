@@ -53,6 +53,23 @@ impl AudioCoreWasm {
         self.inner.note_off_all(immediate);
     }
 
+    /// 释放单个通道的全部音符
+    pub fn note_off_all_channel(&self, channel: i32, immediate: bool) {
+        self.inner.note_off_all_channel(channel, immediate);
+    }
+
+    /// 切换通道音色（bank select + program change）
+    /// channel: MIDI 通道 (0-15)；bank: 0 = 旋律, 128 = 鼓组；program: preset 编号
+    /// JS 端会做特性检测（旧版 wasm 无此导出时安全跳过）
+    pub fn set_program(&self, channel: i32, bank: i32, program: i32) {
+        self.inner.set_program(channel, bank, program);
+    }
+
+    /// 设置通道音量（CC#7，0-127）
+    pub fn set_channel_volume(&self, channel: i32, volume: i32) {
+        self.inner.set_channel_volume(channel, volume);
+    }
+
     /// 渲染音频到 buffer
     /// left/right: Float32Array，长度必须相同且为 block_size 的整数倍
     /// 返回实际渲染的样本数

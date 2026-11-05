@@ -130,6 +130,34 @@ impl AudioCore {
         }
     }
 
+    /// 释放单个通道的全部音符（暂停/停止时比全局更精准）
+    pub fn note_off_all_channel(&self, channel: i32, immediate: bool) {
+        if let Ok(mut synth) = self.synthesizer.lock() {
+            synth.note_off_all_channel(channel, immediate);
+        }
+    }
+
+    /// 切换通道音色（bank select + program change）
+    /// channel: MIDI 通道 (0-15)；bank: 0 = 旋律音色库, 128 = 鼓组；program: preset 编号
+    /// 之前 wasm/web 全通道默认 preset 0（所有旋律轨都是钢琴）——这是音质 bug 的根源
+    pub fn set_program(&self, channel: i32, bank: i32, program: i32) {
+        if let Ok(mut synth) = self.synthesizer.lock() {
+            // Bank select（CC#0，MSB）
+            synth.process_midi_message(channel, 0xB0, 0x00, bank);
+            // Program change
+            synth.process_midi_message(channel, 0xC0, program, 0);
+        }
+    }
+
+    /// 设置通道音量（CC#7，0-127）——调音台推子的正确实现
+    /// 之前 wasm/web 路径完全忽略 trackVol，推子无效
+    pub fn set_channel_volume(&self, channel: i32, volume: i32) {
+        if let Ok(mut synth) = self.synthesizer.lock() {
+            let v = volume.clamp(0, 127);
+            synth.process_midi_message(channel, 0xB0, 0x07, v);
+        }
+    }
+
     /// 渲染音频到 buffer
     /// left/right: 立体声输出，长度必须相同
     pub fn render(&self, left: &mut [f32], right: &mut [f32]) {

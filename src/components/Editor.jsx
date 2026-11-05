@@ -346,6 +346,8 @@ const Editor = memo(({
             lang={lang}
             editMode={editMode}
             quantizeValue={quantizeValue}
+            bpm={bpm}
+            onSeek={handleOnSeek}
           />
         )}
 

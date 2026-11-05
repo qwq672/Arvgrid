@@ -303,6 +303,36 @@ fn set_master_volume(volume: f32, state: tauri::State<'_, AudioState>) -> Result
     Ok(())
 }
 
+/// 通道音色切换（bank select + program change）
+/// v12：桌面端此前从未发过 program change，所有旋律轨都是钢琴音色
+#[tauri::command]
+fn set_program(
+    channel: i32,
+    bank: i32,
+    program: i32,
+    state: tauri::State<'_, AudioState>,
+) -> Result<(), String> {
+    let guard = state.core.lock().map_err(|e| e.to_string())?;
+    if let Some(core) = guard.as_ref() {
+        core.set_program(channel, bank, program);
+    }
+    Ok(())
+}
+
+/// 通道音量（CC#7，0-127）——调音台推子
+#[tauri::command]
+fn set_channel_volume(
+    channel: i32,
+    volume: i32,
+    state: tauri::State<'_, AudioState>,
+) -> Result<(), String> {
+    let guard = state.core.lock().map_err(|e| e.to_string())?;
+    if let Some(core) = guard.as_ref() {
+        core.set_channel_volume(channel, volume);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn audio_info(state: tauri::State<'_, AudioState>) -> Result<String, String> {
     let guard = state.core.lock().map_err(|e| e.to_string())?;
@@ -349,6 +379,16 @@ fn switch_output_device(
 fn get_sample_counter(state: tauri::State<'_, AudioState>) -> Result<u64, String> {
     let counter = state.sample_counter.lock().map_err(|e| e.to_string())?;
     Ok(*counter)
+}
+
+/// 重置采样计数器并清空调度队列（每次播放/恢复前必须调用）
+/// v12 修复：sample_counter 只在 load_sf2 时重置。流持续运行期间计数不断增长，
+/// 旧计数会把新调度的前 N 秒事件判定为"已过期"而瞬间全部触发（音符堆爆）。
+#[tauri::command]
+fn reset_sample_counter(state: tauri::State<'_, AudioState>) -> Result<(), String> {
+    *state.sample_counter.lock().map_err(|e| e.to_string())? = 0;
+    state.schedule_queue.lock().map_err(|e| e.to_string())?.clear();
+    Ok(())
 }
 
 fn main() {
@@ -417,10 +457,13 @@ fn main() {
             note_off_all,
             note_on_batch,
             set_master_volume,
+            set_program,
+            set_channel_volume,
             audio_info,
             list_output_devices,
             switch_output_device,
             get_sample_counter,
+            reset_sample_counter,
         ])
         .run(tauri::generate_context!())
         .expect("error running arvgrid desktop");

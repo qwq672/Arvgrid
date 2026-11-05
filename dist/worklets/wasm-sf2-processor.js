@@ -1,28 +1,31 @@
-// WASM SF2 音频处理器 v9
-// 主动接收主线程推送的 WASM 字节（不等 request-response）
+// WASM SF2 音频处理器 v11 —— 修复版
+//
+// v11 关键修复（100% 回退 JS 的根因）：
+//   旧版在收到 init-wasm-bytes 消息后用动态 `import('../wasm/audio_core.js')`
+//   加载 wasm-bindgen 胶水。但 WHATWG 规范与 Chromium 禁止在
+//   WorkletGlobalScope 使用动态 import()
+//   （报错：import() is disallowed on WorkletGlobalScope），
+//   导致 WASM 初始化永远失败、每次都回退 JS worklet。
+//
+//   正确做法：静态 import（addModule 的模块图加载支持 ESM 静态导入链），
+//   然后用 wasm-bindgen 提供的 `initSync(bytes)` 同步实例化——不需要
+//   fetch、不需要动态 import。
+//
+//   静态 import 的模块求值顺序：worklet-env.js（polyfill）→ audio_core.js
+//   （其模块体顶层 `new TextDecoder()` 依赖 polyfill）→ 本文件。
+//   因此 './worklet-env.js' 必须写在第一个 import。
 //
 // rustysynth 完整 SF2 引擎：generator + modulator + 滤波器包络 + LFO + 循环点
 
-// ============ Polyfill: TextDecoder / TextEncoder ============
-if (typeof TextDecoder === 'undefined') {
-  class TDP { constructor(e='utf-8',o={}) {this.e=e.toLowerCase();this.f=o.fatal||false;} decode(b) {
-    if(b==null)return'';let a;if(b instanceof ArrayBuffer)a=new Uint8Array(b);else if(ArrayBuffer.isView(b))a=new Uint8Array(b.buffer,b.byteOffset,b.byteLength);else{if(this.f)throw new TypeError('Invalid');return'';}let s='';for(let i=0;i<a.length;){const b0=a[i++];if(b0<0x80){s+=String.fromCharCode(b0);}else if(b0<0xC0){if(this.f)throw new TypeError('Invalid');}else if(b0<0xE0){const b1=a[i++]||0;s+=String.fromCharCode(((b0&0x1F)<<6)|(b1&0x3F));}else if(b0<0xF0){const b1=a[i++]||0,b2=a[i++]||0;s+=String.fromCharCode(((b0&0x0F)<<12)|((b1&0x3F)<<6)|(b2&0x3F));}else{const b1=a[i++]||0,b2=a[i++]||0,b3=a[i++]||0,cp=((b0&0x07)<<18)|((b1&0x3F)<<12)|((b2&0x3F)<<6)|(b3&0x3F),adj=cp-0x10000;s+=String.fromCharCode(0xD800+(adj>>10),0xDC00+(adj&0x3FF));}}return s;}}
-  globalThis.TextDecoder = TDP;
-}
-if (typeof TextEncoder === 'undefined') {
-  class TEP { constructor(){this.encoding='utf-8';} encode(s){if(s==null)return new Uint8Array(0);const b=[];for(let i=0;i<s.length;i++){let c=s.charCodeAt(i);if(c>=0xD800&&c<=0xDBFF&&i+1<s.length){const c2=s.charCodeAt(i+1);if(c2>=0xDC00&&c2<=0xDFFF){c=0x10000+((c-0xD800)<<10)+(c2-0xDC00);i++;}}if(c<0x80)b.push(c);else if(c<0x800)b.push(0xC0|(c>>6),0x80|(c&0x3F));else if(c<0x10000)b.push(0xE0|(c>>12),0x80|((c>>6)&0x3F),0x80|(c&0x3F));else b.push(0xF0|(c>>18),0x80|((c>>12)&0x3F),0x80|((c>>6)&0x3F),0x80|(c&0x3F));}return new Uint8Array(b);}}
-  globalThis.TextEncoder = TEP;
-}
-if (typeof console === 'undefined') { globalThis.console = { log(){}, error(){}, warn(){} }; }
+import './worklet-env.js';
+import { initSync, AudioCoreWasm } from '../wasm/audio_core.js';
 
 // ============ WASM 模块状态 ============
-let _init, _AudioCoreWasm;
 let _wasmReady = false;
 
 class WasmSf2Processor extends AudioWorkletProcessor {
   constructor() {
     super();
-    console.log('[wasm-worklet] constructor: start');
     this.audioCore = null;
     this.sampleRate = sampleRate;
     this._leftBuf = null;
@@ -30,30 +33,30 @@ class WasmSf2Processor extends AudioWorkletProcessor {
     this._blockSize = 0;
     this._pendingNotes = [];
     this._renderError = false;
+    // v12：通道音色/音量缓存（避免每音符重复发 MIDI 消息）
+    // rustysynth 默认全通道 preset 0——不切音色所有旋律轨都是钢琴
+    this._channelProgram = new Map();  // channel -> {bank, program}
 
-    this.port.onmessage = async (e) => {
+    this.port.onmessage = (e) => {
       const msg = e.data;
-      console.log('[wasm-worklet] onmessage:', msg.type);
 
       if (msg.type === 'init-wasm-bytes') {
-        // 主线程主动推送 WASM 字节
+        // 主线程主动推送 WASM 字节（带 transfer，零拷贝）
         if (msg.error) {
           console.error('[wasm-worklet] init-wasm-bytes error:', msg.error);
           this.port.postMessage({ type: 'init-error', message: msg.error });
           return;
         }
         try {
-          console.log('[wasm-worklet] init-wasm: bytes received:', msg.wasmBytes.byteLength);
-          console.log('[wasm-worklet] importing audio_core.js...');
-          const mod = await import('../wasm/audio_core.js');
-          _init = mod.default;
-          _AudioCoreWasm = mod.AudioCoreWasm;
-          console.log('[wasm-worklet] audio_core.js imported, _init:', typeof _init, '_AudioCoreWasm:', typeof _AudioCoreWasm);
-          if (typeof _init !== 'function') throw new Error('audio_core.js default export is not a function');
-          console.log('[wasm-worklet] initializing WASM...');
-          await _init(msg.wasmBytes);
+          if (_wasmReady) {
+            // 已初始化过（重复 init）：直接确认就绪
+            this.port.postMessage({ type: 'wasm-ready' });
+            return;
+          }
+          // 同步实例化：new WebAssembly.Module(bytes) + new WebAssembly.Instance(...)
+          // initSync 接受 BufferSource；AudioWorkletGlobalScope 支持 WebAssembly
+          initSync(msg.wasmBytes);
           _wasmReady = true;
-          console.log('[wasm-worklet] WASM initialized successfully, posting wasm-ready');
           this.port.postMessage({ type: 'wasm-ready' });
         } catch (err) {
           console.error('[wasm-worklet] WASM init error:', err.message || err);
@@ -64,22 +67,21 @@ class WasmSf2Processor extends AudioWorkletProcessor {
 
       if (msg.type === 'load-sf2') {
         try {
-          console.log('[wasm-worklet] load-sf2: received, size:', msg.data?.byteLength || msg.data?.length);
           if (!_wasmReady) {
             console.error('[wasm-worklet] load-sf2: WASM not ready!');
             this.port.postMessage({ type: 'load-error', message: 'WASM not initialized' });
             return;
           }
-          console.log('[wasm-worklet] load-sf2: creating AudioCoreWasm...');
           const sf2Bytes = new Uint8Array(msg.data);
-          console.log('[wasm-worklet] load-sf2: sf2Bytes length:', sf2Bytes.length);
-          this.audioCore = new _AudioCoreWasm(sf2Bytes, this.sampleRate, 64);
+          // 64 复音：网页端 worklet 与主线程负载解耦，rustysynth
+          // 内部 voice stealing 高效；桌面端 Rust 路径用 256
+          this.audioCore = new AudioCoreWasm(sf2Bytes, this.sampleRate, 64);
           this._blockSize = this.audioCore.block_size();
-          console.log('[wasm-worklet] load-sf2: AudioCoreWasm created, block_size:', this._blockSize);
           this._leftBuf = new Float32Array(this._blockSize);
           this._rightBuf = new Float32Array(this._blockSize);
           this._renderError = false;
-          console.log('[wasm-worklet] load-sf2: posting load-success');
+          // 新 SF2 = 新合成器实例，通道音色缓存全部失效
+          this._channelProgram.clear();
           this.port.postMessage({ type: 'load-success' });
         } catch (err) {
           console.error('[wasm-worklet] load-sf2 error:', err.message || err);
@@ -90,10 +92,11 @@ class WasmSf2Processor extends AudioWorkletProcessor {
 
       if (msg.type === 'note-on') {
         if (this.audioCore) {
+          this._applyProgram(msg.channel || 0, msg.bank ?? 0, msg.program);
           this._pendingNotes.push({
             whenSec: msg.whenSec ?? currentTime,
             channel: msg.channel || 0, key: msg.key, velocity: msg.velocity,
-            noteOffTime: (msg.duration!=null && msg.duration>0) ? (msg.whenSec ?? currentTime)+msg.duration : null,
+            noteOffTime: (msg.duration != null && msg.duration > 0) ? (msg.whenSec ?? currentTime) + msg.duration : null,
           });
         }
       } else if (msg.type === 'note-on-batch') {
@@ -101,23 +104,45 @@ class WasmSf2Processor extends AudioWorkletProcessor {
           for (let i = 0; i < msg.notes.length; i++) {
             const n = msg.notes[i];
             const when = n.whenSec ?? currentTime;
+            this._applyProgram(n.channel || 0, n.bank ?? 0, n.program);
             this._pendingNotes.push({
-              whenSec: when, channel: n.channel||0, key: n.key, velocity: n.velocity,
-              noteOffTime: (n.duration!=null && n.duration>0) ? when+n.duration : null,
+              whenSec: when, channel: n.channel || 0, key: n.key, velocity: n.velocity,
+              noteOffTime: (n.duration != null && n.duration > 0) ? when + n.duration : null,
             });
           }
         }
       } else if (msg.type === 'note-off') {
-        if (this.audioCore) this.audioCore.note_off(msg.channel||0, msg.key);
+        if (this.audioCore) this.audioCore.note_off(msg.channel || 0, msg.key);
       } else if (msg.type === 'all-notes-off') {
-        if (this.audioCore) { this.audioCore.note_off_all(false); this._pendingNotes.length=0; }
+        if (this.audioCore) { this.audioCore.note_off_all(false); this._pendingNotes.length = 0; }
       } else if (msg.type === 'set-master-volume') {
         if (this.audioCore) this.audioCore.set_master_volume(msg.value);
+      } else if (msg.type === 'set-channel-volume') {
+        // v12：调音台推子（CC#7）——旧版 wasm 无此导出时安全跳过
+        if (this.audioCore && typeof this.audioCore.set_channel_volume === 'function') {
+          try { this.audioCore.set_channel_volume(msg.channel || 0, msg.value | 0); } catch (e) {}
+        }
       }
+      // set-polyphony 等 JS-worklet 消息：wasm 引擎内部管理复音，忽略即可
     };
 
-    console.log('[wasm-worklet] constructor: done, posting processor-ready');
     this.port.postMessage({ type: 'processor-ready' });
+  }
+
+  // v12：按通道切音色（bank select + program change），带缓存与特性守卫。
+  // 旧版 wasm（无 set_program 导出）会安全跳过——仍能出声，只是全钢琴。
+  _applyProgram(channel, bank, program) {
+    if (program == null || !this.audioCore) return;
+    const cached = this._channelProgram.get(channel);
+    if (cached && cached.bank === (bank || 0) && cached.program === program) return;
+    if (typeof this.audioCore.set_program === 'function') {
+      try {
+        this.audioCore.set_program(channel | 0, bank | 0, program | 0);
+        this._channelProgram.set(channel, { bank: bank || 0, program });
+      } catch (e) {
+        console.warn('[wasm-worklet] set_program failed:', e.message);
+      }
+    }
   }
 
   process(inputs, outputs) {
@@ -128,6 +153,8 @@ class WasmSf2Processor extends AudioWorkletProcessor {
     const now = currentTime;
     const blockEnd = now + output[0].length / this.sampleRate;
     if (this._pendingNotes.length > 0) {
+      // 排程：note-on 到期触发；对应的 note-off 入队等待到期
+      // （v10 修复：旧版 note-off 分支是 note-on 条件的子集，永不可达）
       const remaining = [];
       for (let i = 0; i < this._pendingNotes.length; i++) {
         const n = this._pendingNotes[i];

@@ -217,11 +217,16 @@ export default function App() {
     try {
       // 获取 SF2 数据（如果已加载）
       const sf2Data = audioEngine.sf2Loaded ? audioEngine._getSf2Data?.() : null;
-      const blob = await exportAudio(project.tracks, project.bpm, sf2Data, options, onProgress);
+      // v12：原始 SF2 字节存在时导出走 WASM 离线渲染（与实时播放同引擎，音色一致）
+      const sf2Raw = audioEngine._getSf2Raw?.() || null;
+      const blob = await exportAudio(project.tracks, project.bpm, sf2Data, options, onProgress, sf2Raw);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const ext = options.format === 'mp3' ? 'mp3' : options.format === 'flac' ? 'flac' : 'wav';
+      // v12：FLAC/AAC 不被浏览器支持时会静默降级为 WAV——扩展名必须跟真实容器一致，
+      // 否则存出 ".flac" 的文件实际是 WAV 内容（部分播放器拒绝播放）
+      let ext = options.format === 'mp3' ? 'mp3' : options.format === 'flac' ? 'flac' : options.format === 'aac' ? 'aac' : 'wav';
+      if (blob.type === 'audio/wav' || blob.type === 'audio/x-wav') ext = 'wav';
       const title = project.meta?.title || 'export';
       a.download = `${title}.${ext}`;
       a.click();

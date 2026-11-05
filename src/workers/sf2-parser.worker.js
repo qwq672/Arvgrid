@@ -1,10 +1,9 @@
 // SF2 解析 Web Worker
 // 把 parseSF2 移出主线程，避免加载大 SF2 文件时冻结 UI
 
-// Polyfill: soundfont2 库 UMD 格式使用 window，worker 里不存在
-if (typeof window === 'undefined' && typeof self !== 'undefined') {
-  globalThis.window = self;
-}
+// 环境补丁必须是第一个 import：soundfont2 的 UMD 包装在模块求值期
+// 引用 window，worker 里不存在 → ReferenceError（旧版因此每次都回退主线程）
+import './worker-env.js';
 
 import { parseSF2 } from '../lib/sf2Parser';
 

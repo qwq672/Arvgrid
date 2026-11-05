@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { getOscillatorPreset } from '../lib/oscillatorPresets';
 import { parseSF2 } from '../lib/sf2Parser';
-import { parseSF2WithWasm, isWasmSupported } from '../lib/wasmBackend';
+import { isWasmSupported } from '../lib/wasmBackend';
 import { AUTOMATION_PARAMS, AUTOMATION_PARAM_MAP, sampleAutomation } from '../lib/automation';
 import { isTauriDesktop, tauriAudio } from '../lib/tauriBridge';
 
@@ -45,6 +45,14 @@ const BUFFER_PRESETS = {
   ultra: [1.0, 80],    // 极致稳定模式（高内存占用）
 };
 
+// v12：旋律轨道专属 MIDI 通道（避开鼓组通道 9）
+// rustysynth 是按通道管理音色/音量/包络的——每轨一个通道才能：
+//   - 每轨独立音色（否则全通道都是钢琴）
+//   - 每轨独立推子音量（CC#7）
+//   - 同音高不同轨的 note-off 不互踩
+// 超过 15 条旋律轨时循环复用（极少见）
+const NON_DRUM_CHANNELS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15];
+
 export function useAudioEngine() {
   const audioCtxRef = useRef(null);
   const masterGainRef = useRef(null);
@@ -57,6 +65,10 @@ export function useAudioEngine() {
   const delayFeedbackRef = useRef(null);
   const instrumentRef = useRef(null);
   const sf2DataRef = useRef(null);
+  // v12: WASM 模式下保留原始 SF2 字节（导出时交给 wasm 离线渲染 worker，
+  // 与实时播放同一套 rustysynth 引擎——导出音色与播放一致，且不受
+  // OfflineAudioContext 百万节点限制）
+  const sf2RawRef = useRef(null);
   const sf2BuffersRef = useRef({});
   const sf2PresetMapRef = useRef(new Map()); // 缓存 program -> preset 映射
   const [soundSource, setSoundSource] = useState('default');
@@ -215,6 +227,18 @@ export function useAudioEngine() {
   useEffect(() => { soundSourceRef.current = soundSource; }, [soundSource]);
   useEffect(() => { metronomeOnRef.current = metronomeOn; }, [metronomeOn]);
 
+  // v12：WASM 通道音量缓存（只在 trackVol 变化时发 CC#7，避免每音符一条消息）
+  const wasmChannelVolRef = useRef(new Map());
+  const sendWasmChannelVolume = useCallback((channel, trackVol) => {
+    const node = workletNodeRef.current;
+    if (!node || workletBackendRef.current !== 'wasm') return;
+    const last = wasmChannelVolRef.current.get(channel);
+    if (last === trackVol) return;
+    wasmChannelVolRef.current.set(channel, trackVol);
+    const v = Math.max(0, Math.min(127, Math.round(trackVol * 127)));
+    node.port.postMessage({ type: 'set-channel-volume', channel, value: v });
+  }, []);
+
   // 内部方法：加载 JS worklet（原 SF2 processor）
   const loadJsWorkletImpl = useCallback(async (ctx, noteBus) => {
     try {
@@ -251,6 +275,18 @@ export function useAudioEngine() {
     }
     const ctx = new (window.AudioContext || window.webkitAudioContext)(ctxOptions);
     audioCtxRef.current = ctx;
+
+    // v12：一次性全局手势监听——用户任意首次交互即 resume（autoplay 策略下
+    // 挂起态音频线程不投递 port 消息，WASM worklet 初始化会被卡住）
+    if (ctx.state === 'suspended' && typeof window !== 'undefined') {
+      const resumeOnce = () => {
+        ctx.resume().catch(() => {});
+        window.removeEventListener('pointerdown', resumeOnce);
+        window.removeEventListener('keydown', resumeOnce);
+      };
+      window.addEventListener('pointerdown', resumeOnce);
+      window.addEventListener('keydown', resumeOnce);
+    }
 
     const master = ctx.createGain();
     master.gain.value = 0.7;
@@ -382,7 +418,9 @@ export function useAudioEngine() {
     if (WASM_ENABLED && isWasmSupported()) {
       try {
         console.log('[arvgrid WASM] Step 1: loading wasm-sf2-processor.js module...');
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=10', location.href).href;
+        // v11：worklet 改为静态 import + initSync（WorkletGlobalScope 禁止动态 import），
+        // 版本号同步 bump，强制刷新旧缓存（否则浏览器拿到的还是旧坏文件）
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=11', location.href).href;
         console.log('[arvgrid WASM] worklet URL:', workletUrl);
         await ctx.audioWorklet.addModule(workletUrl);
         console.log('[arvgrid WASM] Step 2: module loaded, creating AudioWorkletNode...');
@@ -397,6 +435,32 @@ export function useAudioEngine() {
         workletReadyRef.current = true;
         workletBackendRef.current = 'wasm';
         console.log('[arvgrid WASM] Step 3: AudioWorkletNode created');
+
+        // v12 关键修复：等待 AudioContext 真正 running 再发初始化消息。
+        // 浏览器自动播放策略下，挂起态（suspended）的音频线程不投递 port 消息——
+        // init-wasm-bytes 发出去 worklet 永远收不到，Step 6 必然超时 → 假性回退 JS。
+        // （旧版 JS worklet "能用"只是因为它不需要确认消息。）
+        if (ctx.state !== 'running') {
+          console.log('[arvgrid WASM] Step 3.5: AudioContext suspended（autoplay 策略），等待 running…');
+          await new Promise((resolve) => {
+            let done = false;
+            const finish = () => { if (!done) { done = true; cleanup(); resolve(); } };
+            const onState = () => { if (ctx.state === 'running') finish(); };
+            const cleanup = () => {
+              ctx.removeEventListener('statechange', onState);
+              clearInterval(poll);
+            };
+            const poll = setInterval(() => { if (ctx.state === 'running') finish(); }, 200);
+            ctx.addEventListener('statechange', onState);
+            // 30 秒兜底（用户始终未交互就放行，让超时逻辑接管 fallback）
+            setTimeout(finish, 30000);
+          });
+          if (ctx.state !== 'running') {
+            // 仍未运行（用户从未交互）：抛出让 catch 走 JS worklet fallback
+            // （JS worklet 不依赖确认消息，挂起态也能完成加载）
+            throw new Error('AudioContext 未能启动（等待用户交互）');
+          }
+        }
 
         // 主动预加载 WASM 字节并推送给 worklet
         // 不等 worklet 请求（request-response 在 Cloudflare Rocket Loader 下消息丢失）
@@ -704,17 +768,23 @@ export function useAudioEngine() {
     return { oscillators, sources, allNodes, stopTime: stopT };
   }
 
-  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum, batchBuffer, trackVol = 1) {
+  function scheduleSF2Sample(whenSec, pitch, duration, velocity, program, isDrum, batchBuffer, trackVol = 1, channel = null) {
     const ctx = audioCtxRef.current;
     // v8: WASM backend 批量调度，避免大量 setTimeout 导致主线程卡顿
     if (workletBackendRef.current === 'wasm' && workletReadyRef.current && workletNodeRef.current) {
       const midi = noteToMidi(pitch);
-      const channel = isDrum ? 9 : 0;  // GM 鼓组在 channel 9
+      // v12：每轨专属通道（鼓组 9，旋律避开 9）；带 bank 切音色
+      const ch = (channel != null) ? channel : (isDrum ? 9 : 0);
+      const bank = isDrum ? 128 : 0;
+      // 调音台推子：CC#7 通道音量（只在变化时发送）
+      sendWasmChannelVolume(ch, trackVol ?? 1);
       // 收集到 batchBuffer，由调用方一次性发送
       // 不再用 setTimeout 逐个调度，避免密集音符时主线程被定时器淹没
       const noteMsg = {
         type: 'note-on',
-        channel,
+        channel: ch,
+        bank,          // 128 = 鼓组（GM percussion），0 = 旋律
+        program,       // worklet 内部按通道缓存，变化才发 program change
         key: midi,
         velocity,
         whenSec,         // 调度时间
@@ -936,6 +1006,7 @@ export function useAudioEngine() {
         program: meta.program,
         isDrum: meta.isDrum,
         trackVol: meta.trackVol,
+        channel: meta.channel,
       };
     };
 
@@ -1031,7 +1102,7 @@ export function useAudioEngine() {
         }, delayMs);
         scheduledTimeoutsRef.current.push(tid);
       } else if (src === 'sf2' && (sf2DataRef.current || workletBackendRef.current === 'wasm')) {
-        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum, sf2BatchBuffer, ev.trackVol ?? 1);
+        group = scheduleSF2Sample(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.isDrum, sf2BatchBuffer, ev.trackVol ?? 1, ev.channel);
       } else {
         group = scheduleSynthNote(whenSec, ev.pitch, ev.duration, ev.velocity, ev.program, ev.trackVol ?? 1);
       }
@@ -1131,6 +1202,7 @@ export function useAudioEngine() {
     nextEventIndexRef.current = 0;
     nextMetronomeIndexRef.current = 0;
     pauseTimeRef.current = 0;
+    seekStartOffsetRef.current = 0;  // v12：停止时清空 seek 偏移（重新从头）
     schedulerLagCountRef.current = 0;
     setPerformanceInfo({ level: 'low', mem: 0 });
 
@@ -1163,7 +1235,7 @@ export function useAudioEngine() {
     // Solo 处理：有任何 solo 轨时只播放 solo 轨
     const hasSoloTrack = tracks.some(t => t.solo);
     let totalNotes = 0;
-    const trackMeta = [];  // [{ program, isDrum, trackVol }, ...] 每条事件引用
+    const trackMeta = [];  // [{ program, isDrum, trackVol, channel }, ...] 每条事件引用
     for (let ti = 0; ti < tracks.length; ti++) {
       const track = tracks[ti];
       if (track.mute) continue;
@@ -1176,6 +1248,8 @@ export function useAudioEngine() {
         program: track.program ?? 0,
         isDrum: !!(track.isDrum),
         trackVol,
+        // v12：每轨专属 MIDI 通道（鼓组 9，旋律避开 9）
+        channel: !!(track.isDrum) ? 9 : NON_DRUM_CHANNELS[trackMeta.length % NON_DRUM_CHANNELS.length],
       });
     }
     if (totalNotes === 0) {
@@ -1216,7 +1290,12 @@ export function useAudioEngine() {
       }
       if (metaIdx < 0) {
         metaIdx = trackMeta.length;
-        trackMeta.push({ program: track.program ?? 0, isDrum: !!(track.isDrum), trackVol });
+        trackMeta.push({
+          program: track.program ?? 0,
+          isDrum: !!(track.isDrum),
+          trackVol,
+          channel: !!(track.isDrum) ? 9 : NON_DRUM_CHANNELS[trackMeta.length % NON_DRUM_CHANNELS.length],
+        });
       }
       const notes = track.notes;
       for (let ni = 0; ni < notes.length; ni++) {
@@ -1276,8 +1355,25 @@ export function useAudioEngine() {
     nextMetronomeIndexRef.current = 0;
 
     const startTime = ctx.currentTime + 0.1;
-    startTimeRef.current = startTime;
+    // v12：停止时曾 seek 过（timeline 点击）→ 从该偏移开始播放
+    const startFrom = seekStartOffsetRef.current;
+    startTimeRef.current = startTime - startFrom;
     pauseTimeRef.current = 0;
+    if (startFrom > 0 && eventsRef.current) {
+      // 跳过 startFrom 之前的音符（二分查找第一个 >= startFrom 的事件）
+      const times = eventsRef.current.time;
+      if (times && times.length > 0) {
+        let lo = 0, hi = times.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (times[mid] < startFrom) lo = mid + 1; else hi = mid;
+        }
+        nextEventIndexRef.current = lo;
+      }
+      // 节拍器同步偏移
+      const beatInterval = 60 / (bpm || 120);
+      nextMetronomeIndexRef.current = Math.floor(startFrom / beatInterval);
+    }
 
     isPlayingRef.current = true;
     isPausedRef.current = false;
@@ -1294,7 +1390,8 @@ export function useAudioEngine() {
     // 500ms 检查一次足够（比 200ms 稀疏，减少主线程定时器唤醒）
     const checkPlaybackEnd = () => {
       if (!isPlayingRef.current || isPausedRef.current) return;
-      const elapsed = ctx.currentTime - startTime;
+      // v12：从 startTimeRef 起算（含 seek 偏移），否则从中间开始播放会提前结束
+      const elapsed = ctx.currentTime - startTimeRef.current;
       if (elapsed >= total + 0.5) {
         stopPlayback();
       } else {
@@ -1397,13 +1494,23 @@ export function useAudioEngine() {
   // 播放中拖动进度条状态：拖动开始时立即暂停，停止拖动 250ms 后自动恢复
   const seekDragRef = useRef(false);
   const seekResumeTimerRef = useRef(null);
+  // v12：停止状态下的 seek（timeline 点击）——下次播放从该位置开始
+  const seekStartOffsetRef = useRef(0);
   const seekTo = (time) => {
     setCurrentTime(time);
     if (isPlayingRef.current && !isPausedRef.current) {
       // 播放中开始拖动：立即暂停切断已调度的事件
       // （旧逻辑只改 pauseTimeRef，播放中 getPlaybackTime 走 ctx.currentTime 计算，拖动会回弹）
-      pausePlayback();
+      if (isTauriDesktop && tauriPauseRef.current) {
+        tauriPauseRef.current();   // v12：桌面端走原生暂停（旧版未覆盖，音乐停不下来）
+      } else {
+        pausePlayback();
+      }
       seekDragRef.current = true;
+    } else if (!isPlayingRef.current) {
+      // v12：停止状态下记录起始偏移，下次 startPlayback 从这里开始
+      // （旧版 startPlayback 会把 pauseTimeRef 清零，停止时的 seek 位置丢失）
+      seekStartOffsetRef.current = Math.max(0, time);
     }
     pauseTimeRef.current = time;
     if (seekDragRef.current) {
@@ -1415,7 +1522,11 @@ export function useAudioEngine() {
         seekDragRef.current = false;
         // 拖动期间用户手动停止/暂停了，就不再自动恢复
         if (!wasDragging || !isPlayingRef.current || isPausedRef.current) return;
-        resumePlayback(null, bpmRef.current);
+        if (isTauriDesktop && tauriResumeRef.current) {
+          tauriResumeRef.current(null, bpmRef.current);  // v12：桌面端原生恢复
+        } else {
+          resumePlayback(null, bpmRef.current);
+        }
       }, 250);
     }
   };
@@ -1554,6 +1665,13 @@ export function useAudioEngine() {
     setSoundSource,
     loadSF2: async (arrayBuffer, onProgress) => {
       await initAudio();
+      // v12：文件选择是用户手势，可以合法 resume——否则挂起态下
+      // load-sf2 的确认消息永远不回（30 秒超时后假性回退 JS）
+      try {
+        if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+          await audioCtxRef.current.resume();
+        }
+      } catch (e) { /* 部分浏览器非手势上下文会拒绝，忽略 */ }
       try {
         // v8: 根据 worklet backend 选择加载方式
         // WASM backend：整个 SF2 文件传给 worklet，rustysynth 内部解析
@@ -1593,14 +1711,16 @@ export function useAudioEngine() {
             });
 
             if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
-            // WASM 模式下也保留主线程 sf2Data（供导出用）
-            // 之前设为 null 导致导出全部走 synth fallback
-            try {
-              sf2DataRef.current = parseSF2(arrayBuffer, audioCtxRef.current);
-              sf2PresetMapRef.current.clear();
-            } catch (e) {
-              console.warn('[arvgrid] WASM mode: failed to parse SF2 for export fallback:', e.message);
-            }
+            // v12：WASM 模式不再在主线程同步 parseSF2（大 SF2 会冻结 UI 数秒）
+            // - 原始字节保留给导出（wasm 离线渲染 worker 直接吃原始字节）
+            // - JS 回退用的 sf2Data 改由 worker 异步解析，不阻塞 UI
+            sf2RawRef.current = arrayBuffer;
+            sf2DataRef.current = null;
+            sf2PresetMapRef.current.clear();
+            wasmChannelVolRef.current.clear();  // 新合成器 CC 状态重置，主线程缓存同步失效
+            parseSF2InBackground(arrayBuffer).then((data) => {
+              if (data) sf2DataRef.current = data;
+            }).catch(() => { /* 主线程同步解析已在内部兜底 */ });
             setSoundSource('sf2');
             return { success: true, name: 'SF2 (WASM)' };
           } catch (wasmErr) {
@@ -1639,6 +1759,7 @@ export function useAudioEngine() {
         sf2BuffersRef.current = {};
         sf2PresetMapRef.current.clear();
         adaptivePolyphonyRef.current = MAX_POLYPHONY;
+        wasmChannelVolRef.current.clear();
         setSoundSource('sf2');
 
         // 阶段 2：将样本数据传输到 worklet（分批进行，不阻塞 UI）
@@ -1663,6 +1784,8 @@ export function useAudioEngine() {
     },
     sf2Loaded: !!sf2DataRef.current || workletBackendRef.current === 'wasm',
     _getSf2Data: () => sf2DataRef.current,
+    // v12：导出用原始 SF2 字节（存在则导出走 wasm 离线渲染路径）
+    _getSf2Raw: () => sf2RawRef.current,
     initAudio,
     metronomeOn,
     setMetronomeOn: (val) => {
@@ -1719,24 +1842,81 @@ export function useAudioEngine() {
   // ====== 桌面端 Tauri 原生音频桥接 ======
   // 检测到运行在 Tauri 内时，覆盖关键方法走 Rust 路径
   // 桌面端优势：256 复音、cpal 直连系统、零 GC、SIMD
+  // v12：暂停/恢复/seek 此前未被覆盖（暂停后 Rust 队列继续跑，音乐停不下来）
+  const tauriTracksRef = useRef(null);          // 恢复/seek 时需要 tracks（拖动 seek 传 null）
+  const tauriPauseRef = useRef(null);
+  const tauriResumeRef = useRef(null);
+
   const tauriStartPlayback = useCallback(async (tracks, bpm = 120) => {
     if (!isTauriDesktop) return startPlayback(tracks, bpm);
+    tauriTracksRef.current = tracks;
 
-    // 桌面端：批量调度所有音符到 Rust 端的 schedule queue
-    // Rust 端用 sample-accurate 时序触发，比 JS setTimeout 精确 10×
-    const sampleRate = audioCtxRef.current?.sampleRate || 44100;
+    // v12 修复：采样率必须用 Rust 端 cpal 实际值，而不是 webview AudioContext 的。
+    // 两边采样率不一致（如 48k vs 44.1k）时调度会整体漂移、越播越偏。
+    let nativeSampleRate = 44100;
+    try {
+      const info = await tauriAudio.audioInfo();
+      if (info) {
+        const m = /sample_rate=(\d+)/.exec(info);
+        if (m) nativeSampleRate = parseInt(m[1]) || 44100;
+      }
+    } catch (e) { /* 默认 44100 */ }
+    const sampleRate = nativeSampleRate;
+
+    // v12 关键修复：重置采样计数器。旧版只在 load_sf2 时重置，
+    // 流持续运行期间计数不断增长——第二次播放（甚至首次播放的前几十秒）
+    // 会被判定为"已过期"而瞬间全部触发（音符堆爆）。
+    await tauriAudio.noteOffAll();
+    await tauriAudio.resetSampleCounter();
+
+    // v12：每轨专属 MIDI 通道 + 音色切换（旧版按 program%16 映射通道，
+    // 同 program 轨互踩、且从未发过 program change——桌面端也是全钢琴音色）
+    const startFrom = seekStartOffsetRef.current;
     const hasSoloTrack = tracks.some(t => t.solo);  // Solo 过滤
-    const events = [];
-    let totalSec = 0;
+    const trackDefs = [];  // { channel, program, bank, volume }
+    let melodicIdx = 0;
     for (const track of tracks) {
       if (track.mute) continue;
-      if (hasSoloTrack && !track.solo) continue;  // Solo 过滤
-      if (!track.notes) continue;
-      const channel = track.isDrum ? 9 : ((track.program || 0) % 16);
+      if (hasSoloTrack && !track.solo) continue;
+      if (!track.notes || track.notes.length === 0) continue;
+      const isDrum = !!(track.isDrum);
+      const channel = isDrum ? 9 : NON_DRUM_CHANNELS[melodicIdx++ % NON_DRUM_CHANNELS.length];
+      trackDefs.push({
+        channel,
+        program: track.program ?? 0,
+        bank: isDrum ? 128 : 0,
+        volume: Math.max(0, Math.min(1, (track.volume ?? 80) / 100)),
+      });
+    }
+    if (trackDefs.length === 0) return;
+
+    // 每轨预置：音色 + 推子（CC#7）
+    for (const def of trackDefs) {
+      await tauriAudio.setProgram(def.channel, def.bank, def.program);
+      await tauriAudio.setChannelVolume(def.channel, Math.round(def.volume * 127));
+    }
+
+    const events = [];
+    let totalSec = 0;
+    let defIdx = 0;
+    for (const track of tracks) {
+      if (track.mute) continue;
+      if (hasSoloTrack && !track.solo) continue;
+      if (!track.notes || track.notes.length === 0) continue;
+      const def = trackDefs[defIdx++];
+      const channel = def.channel;
       for (const note of track.notes) {
         const startSample = Math.floor((note.startSec || 0) * sampleRate);
         const endSample = Math.floor(((note.startSec || 0) + (note.durationSec || 0)) * sampleRate);
         const midi = typeof note.pitch === 'string' ? noteToMidi(note.pitch) : (note.pitch || 60);
+        // v12：支持停止状态下的 seek 偏移（timeline 点击）
+        if (startFrom > 0 && startSample < startFrom * sampleRate) {
+          // 偏移前开始的音符：note-on 丢弃；但跨越偏移点的 note-off 保留（防悬挂音符）
+          if (endSample >= startFrom * sampleRate) {
+            events.push({ triggerSample: endSample, isNoteOn: false, channel, key: midi, velocity: 0 });
+          }
+          continue;
+        }
         events.push({
           triggerSample: startSample,
           isNoteOn: true,
@@ -1761,11 +1941,16 @@ export function useAudioEngine() {
     isPausedRef.current = false;
     setIsPlaying(true);
     setIsPaused(false);
-    startTimeRef.current = performance.now() / 1000;
+    // 含偏移：elapsed 从 startTimeRef 起算 = 真实曲目位置
+    startTimeRef.current = performance.now() / 1000 - startFrom;
     pauseTimeRef.current = 0;
 
-    // 一次性把所有事件批量发送到 Rust 端（IPC 效率 5×）
-    await tauriAudio.noteOnBatch(events);
+    // v12：分块发送（每块 5 万事件）——50 万音符的工程一次性 IPC 序列化
+    // 会造成 100MB 级字符串峰值与明显卡顿；分块后内存平稳。
+    const CHUNK = 50000;
+    for (let i = 0; i < events.length; i += CHUNK) {
+      await tauriAudio.noteOnBatch(events.slice(i, i + CHUNK));
+    }
 
     // 启动自动化 rAF 循环（同步用 JS 端的 sample_counter）
     startAutomationLoop();
@@ -1787,13 +1972,42 @@ export function useAudioEngine() {
     if (!isTauriDesktop) return stopPlayback();
     stopPlayback();
     tauriAudio.noteOffAll();
+    tauriAudio.resetSampleCounter();
   }, [stopPlayback]);
+
+  // v12：桌面端暂停（旧版未覆盖——暂停后 Rust 调度队列继续跑，音乐停不下来）
+  const tauriPausePlayback = useCallback(() => {
+    if (!isTauriDesktop) return pausePlayback();
+    pausePlayback();                       // 复用状态/定时器清理（WebAudio 侧是空转）
+    // pausePlayback 用 ctx.currentTime 计算 pauseTime——桌面端 startTime 基于
+    // performance.now()，必须重算，否则恢复位置错乱
+    pauseTimeRef.current = Math.max(0, performance.now() / 1000 - startTimeRef.current);
+    tauriAudio.noteOffAll();               // 静音当前音符 + 清空 Rust 调度队列
+  }, [pausePlayback]);
+
+  // v12：桌面端恢复（从暂停位置重建事件流）
+  const tauriResumePlayback = useCallback(async (tracks, bpm = 120) => {
+    if (!isTauriDesktop) return resumePlayback(tracks, bpm);
+    const useTracks = tracks || tauriTracksRef.current;
+    if (!useTracks || !isPausedRef.current) return;
+    // 恢复 = 从暂停位置"开始播放"：把偏移注入 seekStartOffsetRef，
+    // tauriStartPlayback 会跳过偏移前的 note-on 并保留跨越偏移点的 note-off
+    seekStartOffsetRef.current = Math.max(0, pauseTimeRef.current);
+    await tauriStartPlayback(useTracks, bpm || bpmRef.current);
+  }, [resumePlayback, tauriStartPlayback]);
+
+  tauriPauseRef.current = tauriPausePlayback;
+  tauriResumeRef.current = tauriResumePlayback;
 
   const tauriPlayNote = useCallback(async (pitch, duration, velocity, program, isDrum, trackVol) => {
     if (!isTauriDesktop) return playNote(pitch, duration, velocity, program, isDrum, trackVol);
     // 桌面端：直接 note_on + setTimeout 后 note_off
     const midi = typeof pitch === 'string' ? noteToMidi(pitch) : (pitch || 60);
-    const channel = isDrum ? 9 : ((program || 0) % 16);
+    // v12：试听也要切音色（旧版全钢琴）；用通道 0（旋律）/9（鼓）
+    const channel = isDrum ? 9 : 0;
+    const bank = isDrum ? 128 : 0;
+    await tauriAudio.setProgram(channel, bank, program || 0);
+    await tauriAudio.setChannelVolume(channel, Math.round(Math.max(0, Math.min(1, trackVol ?? 1)) * 127));
     await tauriAudio.noteOn(channel, midi, velocity || 90);
     if (duration > 0) {
       setTimeout(() => tauriAudio.noteOff(channel, midi), (duration || 0.3) * 1000);
@@ -1814,15 +2028,16 @@ export function useAudioEngine() {
       console.warn('[tauri-bridge] Rust loadSF2 failed, falling back to JS worklet');
       return engine.loadSF2(arrayBuffer, onProgress);
     }
-    // 同步加载 JS 端 sf2Data（用于导出音频路径）
-    // 注意：大文件（>500MB）JS parseSF2 可能会卡，但只有导出时用
-    try {
-      if (onProgress) onProgress({ stage: 'parsing', percent: 50 });
-      await initAudio();
-      sf2DataRef.current = parseSF2(arrayBuffer, audioCtxRef.current);
-      sf2PresetMapRef.current.clear();
-    } catch (e) {
-      console.warn('[tauri-bridge] JS SF2 parse failed (export path may not work):', e.message);
+    // 同步加载 JS 端 sf2Data（仅用于导出兜底 / preset 名称）
+    // v12：改为 worker 异步解析，不再冻结主线程；原始字节留给导出
+    sf2RawRef.current = arrayBuffer;
+    if (onProgress) onProgress({ stage: 'parsing', percent: 50 });
+    {
+      const data = await parseSF2InBackground(arrayBuffer);
+      if (data) {
+        sf2DataRef.current = data;
+        sf2PresetMapRef.current.clear();
+      }
     }
     setSoundSource('sf2');
     if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'tauri-native' });
@@ -1835,6 +2050,9 @@ export function useAudioEngine() {
         ...engine,
         startPlayback: tauriStartPlayback,
         stopPlayback: tauriStopPlayback,
+        // v12：暂停/恢复此前未被覆盖——暂停后 Rust 调度队列继续跑，音乐停不下来
+        pausePlayback: tauriPausePlayback,
+        resumePlayback: tauriResumePlayback,
         playNote: tauriPlayNote,
         loadSF2: tauriLoadSF2,
         // 桌面端额外暴露设备控制 API
@@ -1931,6 +2149,23 @@ async function parseSF2InWorker(arrayBuffer, onProgress) {
     // 400MB SF2 多 100-200ms 开销可接受，避免 transferable 导致的 detached buffer 问题
     worker.postMessage({ type: 'parse-sf2', arrayBuffer });
   });
+}
+
+// 后台解析：worker 优先，失败回退主线程；永不抛异常（返回 null 表示彻底失败）
+// v12：WASM / 桌面端 loadSF2 都用它，避免大 SF2 在主线程同步解析冻结 UI
+async function parseSF2InBackground(arrayBuffer) {
+  try {
+    const r = await parseSF2InWorker(arrayBuffer);
+    return r.sf2Data;
+  } catch (err) {
+    console.warn('[arvgrid] SF2 worker parse failed, falling back to main thread:', err?.message || err);
+    try {
+      return parseSF2(arrayBuffer, null);
+    } catch (e2) {
+      console.warn('[arvgrid] main-thread SF2 parse also failed:', e2?.message || e2);
+      return null;
+    }
+  }
 }
 
 // 将 SF2 样本数据传输到 AudioWorklet

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Icons } from './Icons';
 import { useTranslation } from '../lib/i18n';
 import { isWasmSupported } from '../lib/wasmBackend';
@@ -50,6 +50,46 @@ export default function SettingsPanel({
       setNativeDevicesLoaded(true);
     }).catch(err => console.warn('list devices failed', err));
   }, [open, listOutputDevices, nativeDevicesLoaded]);
+
+  // v12：网页端输出设备列表（enumerateDevices，替代直接调用不存在的 API）
+  // 旧版直接 navigator.mediaDevices.selectAudioOutput(...)——Firefox / 旧 Chromium
+  // 没有该函数，点击即抛 TypeError（用户日志里的报错来源）
+  const [webOutputDevices, setWebOutputDevices] = useState([]);
+  const supportsSinkId = !!(typeof AudioContext !== 'undefined' && AudioContext.prototype
+    && typeof AudioContext.prototype.setSinkId === 'function');
+  const refreshWebDevices = useCallback(async () => {
+    try {
+      if (navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function') {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setWebOutputDevices(devices.filter(d => d.kind === 'audiooutput'));
+      }
+    } catch (err) {
+      console.warn('enumerateDevices failed:', err);
+    }
+  }, []);
+  useEffect(() => {
+    if (open && !isTauriDesktop) refreshWebDevices();
+  }, [open, isTauriDesktop, refreshWebDevices]);
+  const pickOutputDevice = useCallback(async () => {
+    // Chrome 的 selectAudioOutput 选择器（需要特性检测）
+    const md = navigator.mediaDevices;
+    if (!(md && typeof md.selectAudioOutput === 'function')) {
+      await refreshWebDevices();
+      return;
+    }
+    try {
+      const device = await md.selectAudioOutput();
+      await refreshWebDevices();
+      if (device && audioCtxRef && audioCtxRef.current
+        && typeof audioCtxRef.current.setSinkId === 'function') {
+        try { await audioCtxRef.current.setSinkId(device.deviceId); } catch (err) {
+          console.warn('Failed to set audio output device:', err);
+        }
+      }
+    } catch (err) {
+      console.warn('Device selection failed:', err);
+    }
+  }, [refreshWebDevices]);
   // 实验性 WASM 后端开关
   // 默认启用：rustysynth 完整 SF2 引擎编译好的 WASM 比 JS worklet 快 3-5×
   // 用户可在 Settings 中关闭回退到 JS（保留 fallback 选项）
@@ -93,6 +133,15 @@ export default function SettingsPanel({
     if (!search) return true;
     return text.toLowerCase().includes(search.toLowerCase());
   };
+
+  const setOutputSink = useCallback(async (deviceId) => {
+    if (deviceId && audioCtxRef && audioCtxRef.current
+      && typeof audioCtxRef.current.setSinkId === 'function') {
+      try { await audioCtxRef.current.setSinkId(deviceId); } catch (err) {
+        console.warn('Failed to set audio output device:', err);
+      }
+    }
+  }, []);
 
   // 与 useAudioEngine 的 BUFFER_PRESETS 保持一致
   const bufsize = (typeof bufferSize === 'number') ? bufferSize :
@@ -365,46 +414,36 @@ export default function SettingsPanel({
                 </div>
               )}
 
-              {/* 网页端输出设备选择 */}
+              {/* 网页端输出设备选择（v12：特性检测 + enumerateDevices 列表， */}
+              {/* Firefox / 旧 Chromium 无 selectAudioOutput/setSinkId 时不再抛错） */}
               {!isTauriDesktop && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '输出设备' : 'Device'}</span>
                 <select id="audio-output-device" style={{ flex: 1, fontSize: '0.72rem' }} onChange={async (e) => {
                   const deviceId = e.target.value;
-                  if (deviceId && audioCtxRef) {
-                    try {
-                      const device = await navigator.mediaDevices.selectAudioOutput({ deviceId });
-                      if (device && audioCtxRef.current) {
-                        audioCtxRef.current.setSinkId(deviceId);
-                      }
-                    } catch (err) {
-                      console.warn('Failed to set audio output device:', err);
-                    }
-                  }
+                  if (deviceId) await setOutputSink(deviceId);
                 }}>
                   <option value="">{lang === 'zh' ? '默认设备' : 'Default'}</option>
+                  {webOutputDevices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label || (lang === 'zh' ? '设备' : 'Device') + ' ' + (d.deviceId || '').slice(0, 8)}
+                    </option>
+                  ))}
                 </select>
-                <button onClick={async () => {
-                  try {
-                    const device = await navigator.mediaDevices.selectAudioOutput();
-                    const sel = document.getElementById('audio-output-device');
-                    if (sel) {
-                      const opt = document.createElement('option');
-                      opt.value = device.deviceId;
-                      opt.text = device.label || 'Device';
-                      sel.appendChild(opt);
-                      sel.value = device.deviceId;
-                      if (audioCtxRef && audioCtxRef.current) {
-                        audioCtxRef.current.setSinkId(device.deviceId);
-                      }
-                    }
-                  } catch (err) {
-                    console.warn('Device selection failed:', err);
-                  }
-                }} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>
-                  {lang === 'zh' ? '选择...' : 'Choose...'}
+                <button onClick={() => refreshWebDevices()} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>
+                  {lang === 'zh' ? '刷新' : 'Refresh'}
                 </button>
+                {supportsSinkId && (
+                  <button onClick={pickOutputDevice} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>
+                    {lang === 'zh' ? '选择...' : 'Choose...'}
+                  </button>
+                )}
               </div>
+              )}
+              {!isTauriDesktop && !supportsSinkId && (
+                <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 2, marginBottom: 6 }}>
+                  {lang === 'zh' ? '当前浏览器不支持网页端切换输出设备（需 Chrome/Edge）' : 'This browser does not support switching output devices (Chrome/Edge required)'}
+                </div>
               )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: '0.72rem', minWidth: 60 }}>{lang === 'zh' ? '采样率' : 'Sample Rate'}</span>

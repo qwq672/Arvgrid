@@ -58,7 +58,224 @@ function noteToMidi(pitch: string): number {
 }
 
 /**
+ * v12：WASM 离线渲染（导出首选路径）
+ * 在专用 Web Worker 里跑 rustysynth（与实时播放同一引擎），
+ * 主线程全程不参与渲染；完成后做一道压缩器后处理（与实时链一致，防爆音）。
+ */
+const NON_DRUM_CHANNELS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15];
+
+async function renderWasmOffline(
+  tracks: any[],
+  sampleRate: number,
+  sf2Raw: ArrayBuffer,
+  onProgress?: (progress: ExportProgress) => void,
+): Promise<AudioBuffer> {
+  const hasSolo = tracks.some((t: any) => t.solo);
+  const isTrackAudible = (t: any) => !t.mute && (!hasSolo || !!t.solo);
+
+  let maxTime = 0;
+  let totalNotes = 0;
+  const trackMeta: Array<{ channel: number; program: number; bank: number; volume: number }> = [];
+  let melodicIdx = 0;
+  for (const track of tracks) {
+    if (!isTrackAudible(track) || !track.notes || track.notes.length === 0) continue;
+    const isDrum = !!(track as any).isDrum;
+    const channel = isDrum ? 9 : NON_DRUM_CHANNELS[melodicIdx++ % NON_DRUM_CHANNELS.length];
+    trackMeta.push({
+      channel,
+      program: track.program ?? 0,
+      bank: isDrum ? 128 : 0,
+      volume: Math.max(0, Math.min(1, (track.volume ?? 80) / 100)),
+    });
+    totalNotes += track.notes.length;
+    for (let i = 0; i < track.notes.length; i++) {
+      const n = track.notes[i];
+      const end = (n.startSec || 0) + (n.durationSec || 0);
+      if (end > maxTime) maxTime = end;
+    }
+  }
+  if (totalNotes === 0) throw new Error('No notes to render (project is empty)');
+
+  // 尾部余量：release 尾音 + 混响衰减（rustysynth 内置 reverb）
+  const totalDuration = maxTime + 2.5;
+  const totalSamples = Math.ceil(totalDuration * sampleRate);
+  if (totalSamples > 500_000_000) {
+    throw new Error(`Project too large to export (${(totalSamples * 8 / 1024 / 1024 / 1024).toFixed(1)}GB needed). Try shorter duration or lower sample rate.`);
+  }
+
+  // 紧凑音符数组（与实时播放的 startPlayback 同构）
+  const timeArr = new Float32Array(totalNotes);
+  const durArr = new Float32Array(totalNotes);
+  const pitchArr = new Uint8Array(totalNotes);
+  const velArr = new Uint8Array(totalNotes);
+  const trackIdxArr = new Uint16Array(totalNotes);
+  let ev = 0;
+  let metaIdx = 0;
+  for (const track of tracks) {
+    if (!isTrackAudible(track) || !track.notes || track.notes.length === 0) continue;
+    const def = trackMeta[metaIdx++];
+    // 同一 (program, isDrum, volume) 的轨道复用同一 meta（与实时播放一致）
+    const notes = track.notes;
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      timeArr[ev] = n.startSec || 0;
+      durArr[ev] = n.durationSec || 0;
+      const p = n.pitch;
+      pitchArr[ev] = typeof p === 'string' ? noteToMidi(p) : (p || 60);
+      velArr[ev] = n.velocity || 90;
+      // 找到本 track 的 meta 下标
+      let myIdx = -1;
+      for (let mi = 0; mi < trackMeta.length; mi++) {
+        if (trackMeta[mi].channel === def.channel) { myIdx = mi; break; }
+      }
+      trackIdxArr[ev] = myIdx < 0 ? 0 : myIdx;
+      ev++;
+    }
+  }
+  // 按 time 升序（间接索引排序，全数组同步重排）
+  const order = argsortBy(timeArr);
+  const timeSorted = new Float32Array(totalNotes);
+  const durSorted = new Float32Array(totalNotes);
+  const pitchSorted = new Uint8Array(totalNotes);
+  const velSorted = new Uint8Array(totalNotes);
+  const trackIdxSorted = new Uint16Array(totalNotes);
+  for (let i = 0; i < totalNotes; i++) {
+    const s = order[i];
+    timeSorted[i] = timeArr[s];
+    durSorted[i] = durArr[s];
+    pitchSorted[i] = pitchArr[s];
+    velSorted[i] = velArr[s];
+    trackIdxSorted[i] = trackIdxArr[s];
+  }
+
+  // 启动渲染 worker（传输所有 buffer 零拷贝；sf2Raw 传副本保主线程引用可重复导出）
+  const sf2Copy = sf2Raw.slice(0);
+  const worker = new Worker(new URL('../workers/wasm-offline-render.worker.js', import.meta.url), { type: 'module' });
+
+  const rendered: AudioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+    const fail = (msg: string) => {
+      worker.terminate();
+      reject(new Error(msg));
+    };
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data;
+      if (m.type === 'progress') {
+        if (onProgress) onProgress({ current: m.current, total: m.total, stage: 'rendering' });
+      } else if (m.type === 'done') {
+        const pcmLeft: Float32Array = m.left;
+        const pcmRight: Float32Array = m.right;
+        worker.terminate();
+        // 后处理：master 增益 + 压缩器（与实时链一致，防爆音）
+        postProcessWasmPcm(pcmLeft, pcmRight, m.sampleRate || sampleRate).then(resolve, reject);
+      } else if (m.type === 'error') {
+        fail('WASM worker: ' + (m.message || 'unknown'));
+      }
+    };
+    worker.onerror = (err) => {
+      fail('WASM render worker crashed: ' + (err.message || 'unknown'));
+    };
+    worker.postMessage({
+      type: 'render',
+      sf2Bytes: sf2Copy,
+      sampleRate,
+      totalSamples,
+      masterVolume: 0.7,
+      trackMeta,
+      notes: {
+        time: timeSorted,
+        duration: durSorted,
+        pitch: pitchSorted,
+        velocity: velSorted,
+        trackIdx: trackIdxSorted,
+      },
+    }, [
+      sf2Copy,
+      timeSorted.buffer,
+      durSorted.buffer,
+      pitchSorted.buffer,
+      velSorted.buffer,
+      trackIdxSorted.buffer,
+    ]);
+  });
+
+  if (onProgress) {
+    onProgress({ current: 1, total: 1, stage: 'rendering' });
+  }
+  return rendered;
+}
+
+// 间接索引升序排序（迭代式快排，避免大工程递归爆栈）
+function argsortBy(times: Float32Array): Uint32Array {
+  const n = times.length;
+  const order = new Uint32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  const stack: number[] = [0, n - 1];
+  while (stack.length > 0) {
+    const h = stack.pop()!;
+    const l = stack.pop()!;
+    if (l >= h || l < 0) continue;
+    const mid = (l + h) >>> 1;
+    const a = times[order[l]], b = times[order[mid]], c = times[order[h]];
+    let pivotIdx = mid;
+    if ((a <= b && b <= c) || (c <= b && b <= a)) pivotIdx = mid;
+    else if ((b <= a && a <= c) || (c <= a && a <= b)) pivotIdx = l;
+    else pivotIdx = h;
+    const t = order[pivotIdx]; order[pivotIdx] = order[h]; order[h] = t;
+    const pivot = times[t];
+    let i = l - 1;
+    for (let j = l; j < h; j++) {
+      if (times[order[j]] < pivot) {
+        i++;
+        const s = order[i]; order[i] = order[j]; order[j] = s;
+      }
+    }
+    const s2 = order[i + 1]; order[i + 1] = order[h]; order[h] = s2;
+    const p = i + 1;
+    if (p - 1 > l) stack.push(l, p - 1);
+    if (p + 1 < h) stack.push(p + 1, h);
+  }
+  return order;
+}
+
+// WASM 渲染 PCM 后处理：master 增益 + 压缩器（与实时播放链一致）
+async function postProcessWasmPcm(left: Float32Array, right: Float32Array, sampleRate: number): Promise<AudioBuffer> {
+  const len = left.length;
+  if (typeof OfflineAudioContext === 'undefined') {
+    // 极旧浏览器：直接拼 AudioBuffer 替代品（不后处理，直接编码路径兼容）
+    // 声明一个 duck-typed 对象供编码器使用（getChannelData/getChannelData 语义一致）
+    return {
+      sampleRate,
+      length: len,
+      duration: len / sampleRate,
+      numberOfChannels: 2,
+      getChannelData: (ch: number) => (ch === 0 ? left : right),
+    } as unknown as AudioBuffer;
+  }
+  const ctx = new OfflineAudioContext(2, len, sampleRate);
+  const buf = ctx.createBuffer(2, len, sampleRate);
+  buf.copyToChannel(left, 0);
+  buf.copyToChannel(right, 1);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const master = ctx.createGain();
+  master.gain.value = 0.7;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -12;
+  comp.knee.value = 12;
+  comp.ratio.value = 20;
+  comp.attack.value = 0.001;
+  comp.release.value = 0.05;
+  src.connect(master);
+  master.connect(comp);
+  comp.connect(ctx.destination);
+  src.start(0);
+  return ctx.startRendering();
+}
+
+/**
  * 渲染 MIDI 数据为音频缓冲区
+ * v12：优先走 WASM 离线渲染（与实时播放同一套 rustysynth 引擎），
+ * 失败或不可用时回退 OfflineAudioContext 路径
  */
 export async function renderAudioBuffer(
   tracks: any[],
@@ -66,7 +283,8 @@ export async function renderAudioBuffer(
   sf2Data: any,
   onProgress?: (progress: ExportProgress) => void,
   quality: string = 'balanced',
-  sampleRateOverride?: number
+  sampleRateOverride?: number,
+  sf2Raw?: ArrayBuffer | null,
 ): Promise<AudioBuffer> {
   // Solo 逻辑与实时播放（useAudioEngine.startPlayback）保持一致：
   // 有任一 solo 轨时只渲染 solo 轨，否则渲染全部非 mute 轨
@@ -89,9 +307,22 @@ export async function renderAudioBuffer(
     throw new Error('No notes to render (project is empty)');
   }
 
-  const totalDuration = maxTime + 1.0; // 加 1.0 秒余音
   const params = resolveQualityParams(quality);
   const sampleRate = sampleRateOverride || params.sampleRate;
+
+  // ===== v12：WASM 离线渲染路径 =====
+  // 与实时播放同一套 rustysynth：音色一致 + 不会因百万 AudioNode 而超时/OOM
+  if (sf2Raw && sf2Raw.byteLength > 0 && typeof Worker !== 'undefined') {
+    try {
+      const wasmBuffer = await renderWasmOffline(tracks, sampleRate, sf2Raw, onProgress);
+      if (wasmBuffer) return wasmBuffer;
+    } catch (err: any) {
+      console.warn('[export] WASM offline render failed, falling back to OfflineAudioContext:', err?.message || err);
+      await yieldToMain();
+    }
+  }
+
+  const totalDuration = maxTime + 1.0; // 加 1.0 秒余音
   const totalEvents = tracks.reduce((sum, t) => sum + (isTrackAudible(t) ? (t.notes?.length || 0) : 0), 0);
   const totalSamples = Math.ceil(totalDuration * sampleRate);
 
@@ -843,11 +1074,14 @@ async function encodeMp3InWorker(
 
 /**
  * 导出为 FLAC 格式（使用浏览器原生 API，如果支持）
+ * v12 修复：导出点击是用户手势，但长时间渲染后 AudioContext 可能进入 suspended；
+ * 不 resume 的话 source.onended 永不触发、recorder 录不到帧 → "导出不了"偶发 bug
  */
 export async function exportToFlac(audioBuffer: AudioBuffer): Promise<Blob> {
   // 尝试使用 MediaRecorder（如果浏览器支持 FLAC）
   if (typeof MediaRecorder !== 'undefined') {
     const ctx = new AudioContext();
+    try { await ctx.resume(); } catch { /* 已在运行则忽略 */ }
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
     const dest = ctx.createMediaStreamDestination();
@@ -869,9 +1103,11 @@ export async function exportToFlac(audioBuffer: AudioBuffer): Promise<Blob> {
         // 之前 setTimeout 在某些浏览器（Safari、Chrome 移动）会提前 stop，
         // 导致 recorder 拿到的 chunk 不完整，最终 blob 是空或截断的
         return await new Promise((resolve, reject) => {
+          let fallbackTimer = 0;
           recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
           recorder.onstop = () => {
-            ctx.close();
+            clearTimeout(fallbackTimer);
+            ctx.close().catch(() => {});
             if (chunks.length === 0) {
               reject(new Error('MediaRecorder produced no data (FLAC encoding failed)'));
               return;
@@ -879,7 +1115,8 @@ export async function exportToFlac(audioBuffer: AudioBuffer): Promise<Blob> {
             resolve(new Blob(chunks, { type }));
           };
           recorder.onerror = (e: any) => {
-            ctx.close();
+            clearTimeout(fallbackTimer);
+            ctx.close().catch(() => {});
             reject(new Error(`MediaRecorder error: ${e.error?.message || 'unknown'}`));
           };
           // 双保险：source.onended 是主信号（精确），setTimeout 是兜底（防止 onended 不触发）
@@ -888,30 +1125,20 @@ export async function exportToFlac(audioBuffer: AudioBuffer): Promise<Blob> {
           };
           source.start();
           try { recorder.start(); } catch (e: any) {
-            ctx.close();
+            ctx.close().catch(() => {});
             reject(new Error(`MediaRecorder start failed: ${e.message}`));
             return;
           }
           // 兜底超时：duration + 2 秒（比 onended 多 2 秒余量）
-          const fallbackTimer = setTimeout(() => {
+          fallbackTimer = setTimeout(() => {
             if (recorder.state !== 'inactive') {
               try { recorder.stop(); } catch {}
             }
-          }, audioBuffer.duration * 1000 + 2000);
-          // 清理 timer 防止 leak
-          recorder.onstop = ((origStop: () => void) => () => {
-            clearTimeout(fallbackTimer);
-            ctx.close();
-            if (chunks.length === 0) {
-              reject(new Error('MediaRecorder produced no data (FLAC encoding failed)'));
-              return;
-            }
-            resolve(new Blob(chunks, { type }));
-          })(recorder.onstop as any);
+          }, audioBuffer.duration * 1000 + 2000) as unknown as number;
         });
       }
     }
-    ctx.close();
+    ctx.close().catch(() => {});
   }
 
   // 降级到 WAV（如果 FLAC 不支持）
@@ -921,11 +1148,13 @@ export async function exportToFlac(audioBuffer: AudioBuffer): Promise<Blob> {
 
 /**
  * 导出为 AAC 格式（使用浏览器原生 API）
+ * v12：与 FLAC 同样修复 AudioContext 挂起问题
  */
 export async function exportToAac(audioBuffer: AudioBuffer): Promise<Blob> {
   // 尝试使用 MediaRecorder
   if (typeof MediaRecorder !== 'undefined') {
     const ctx = new AudioContext();
+    try { await ctx.resume(); } catch { /* 已在运行则忽略 */ }
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
     const dest = ctx.createMediaStreamDestination();
@@ -943,9 +1172,11 @@ export async function exportToAac(audioBuffer: AudioBuffer): Promise<Blob> {
         const chunks: Blob[] = [];
 
         return await new Promise((resolve, reject) => {
+          let fallbackTimer = 0;
           recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
           recorder.onstop = () => {
-            ctx.close();
+            clearTimeout(fallbackTimer);
+            ctx.close().catch(() => {});
             if (chunks.length === 0) {
               reject(new Error('MediaRecorder produced no data (AAC encoding failed)'));
               return;
@@ -953,7 +1184,8 @@ export async function exportToAac(audioBuffer: AudioBuffer): Promise<Blob> {
             resolve(new Blob(chunks, { type }));
           };
           recorder.onerror = (e: any) => {
-            ctx.close();
+            clearTimeout(fallbackTimer);
+            ctx.close().catch(() => {});
             reject(new Error(`MediaRecorder error: ${e.error?.message || 'unknown'}`));
           };
           source.onended = () => {
@@ -961,28 +1193,19 @@ export async function exportToAac(audioBuffer: AudioBuffer): Promise<Blob> {
           };
           source.start();
           try { recorder.start(); } catch (e: any) {
-            ctx.close();
+            ctx.close().catch(() => {});
             reject(new Error(`MediaRecorder start failed: ${e.message}`));
             return;
           }
-          const fallbackTimer = setTimeout(() => {
+          fallbackTimer = setTimeout(() => {
             if (recorder.state !== 'inactive') {
               try { recorder.stop(); } catch {}
             }
-          }, audioBuffer.duration * 1000 + 2000);
-          recorder.onstop = ((origStop: () => void) => () => {
-            clearTimeout(fallbackTimer);
-            ctx.close();
-            if (chunks.length === 0) {
-              reject(new Error('MediaRecorder produced no data (AAC encoding failed)'));
-              return;
-            }
-            resolve(new Blob(chunks, { type }));
-          })(recorder.onstop as any);
+          }, audioBuffer.duration * 1000 + 2000) as unknown as number;
         });
       }
     }
-    ctx.close();
+    ctx.close().catch(() => {});
   }
 
   // 降级到 WAV
@@ -992,13 +1215,15 @@ export async function exportToAac(audioBuffer: AudioBuffer): Promise<Blob> {
 
 /**
  * 主导出函数
+ * v12：sf2Raw 存在时优先走 WASM 离线渲染（与实时播放同引擎，音色一致）
  */
 export async function exportAudio(
   tracks: any[],
   bpm: number,
   sf2Data: any,
   options: ExportOptions,
-  onProgress?: (progress: ExportProgress) => void
+  onProgress?: (progress: ExportProgress) => void,
+  sf2Raw?: ArrayBuffer | null,
 ): Promise<Blob> {
   const quality = options.quality || 'balanced';
   const params = resolveQualityParams(quality);
@@ -1015,7 +1240,7 @@ export async function exportAudio(
   }
 
   // 渲染音频缓冲区
-  const audioBuffer = await renderAudioBuffer(tracks, bpm, sf2Data, onProgress, quality, params.sampleRate);
+  const audioBuffer = await renderAudioBuffer(tracks, bpm, sf2Data, onProgress, quality, params.sampleRate, sf2Raw);
 
   // 通知 UI 进入编码阶段
   if (onProgress) {

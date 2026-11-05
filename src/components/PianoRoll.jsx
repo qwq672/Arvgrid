@@ -54,7 +54,7 @@ function lowerBound(arr, target, keyFn) {
   return lo;
 }
 
-export default function PianoRoll({ track, trackColor = '#888', ghostTracks = [], tracks = [], currentTrackId = null, onNotesChange, playNote, isPlaying, getPlaybackTime, lang = 'zh', editMode = 'pointer', quantizeValue = '1/4' }) {
+export default function PianoRoll({ track, trackColor = '#888', ghostTracks = [], tracks = [], currentTrackId = null, onNotesChange, playNote, isPlaying, getPlaybackTime, lang = 'zh', editMode = 'pointer', quantizeValue = '1/4', bpm = 120, onSeek = null }) {
   const canvasRef = useRef(null);
   const playheadCanvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -107,6 +107,12 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   const longPressStartRef = useRef(null);
   const arrangeCanvasRef = useRef(null);
   const scrollRef = useRef(null);
+  // v12：顶部 timeline bar（小节号 + 拍刻度 + 播放头 + 点击定位）
+  const timelineCanvasRef = useRef(null);
+  const timelineGridRef = useRef(null);       // 静态刻度层（离屏）
+  const timelineGridInfoRef = useRef({ w: 0, maxSec: 0, zx: 0, bpm: 0 });
+  const bpmRef = useRef(bpm);
+  useEffect(() => { bpmRef.current = bpm || 120; }, [bpm]);
 
   // 同步 refs
   useEffect(() => { trackRef.current = track; }, [track]);
@@ -213,8 +219,8 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
         gctx.fillRect(0, i * zy, logicalW, zy);
       }
     }
-    // 节拍竖线
-    const beatSec = 60 / 120;
+    // 节拍竖线（v12：用项目 BPM，旧版硬编码 120 导致网格与实际拍速不一致）
+    const beatSec = 60 / (bpmRef.current || 120);
     const totalBeats = Math.ceil(maxSec / beatSec) + 1;
     for (let b = 0; b <= totalBeats; b++) {
       const x = b * beatSec * zx;
@@ -238,7 +244,117 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       gctx.stroke();
     }
     gridSizeRef.current = { w: logicalW, h: logicalH, maxSec, zx, zy };
-  }, [track.notes, zoomX, zoomY]);
+  }, [track.notes, zoomX, zoomY, bpm]);
+
+  // v12：timeline 静态刻度层（离屏）：小节号 + 拍刻度，仅在 maxSec/zoom/bpm 变化时重画
+  const TL_H = 20;
+  useEffect(() => {
+    const maxSec = maxSecRef.current;
+    const zx = zoomXRef.current;
+    const bpmV = bpmRef.current || 120;
+    const logicalW = Math.max(800, maxSec * zx + 120);
+    if (!timelineGridRef.current) timelineGridRef.current = document.createElement('canvas');
+    const tg = timelineGridRef.current;
+    const physW = Math.round(logicalW * DPR);
+    if (tg.width !== physW) tg.width = physW;
+    if (tg.height !== Math.round(TL_H * DPR)) tg.height = Math.round(TL_H * DPR);
+    const gctx = tg.getContext('2d');
+    gctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    gctx.clearRect(0, 0, logicalW, TL_H);
+    gctx.fillStyle = '#121216';
+    gctx.fillRect(0, 0, logicalW, TL_H);
+    const beatSec = 60 / bpmV;
+    const barSec = beatSec * 4;  // 4/4
+    const totalBars = Math.ceil(maxSec / barSec) + 1;
+    gctx.font = '9px ui-monospace, monospace';
+    gctx.textBaseline = 'middle';
+    for (let bar = 0; bar <= totalBars; bar++) {
+      const x = bar * barSec * zx;
+      // 小节线
+      gctx.strokeStyle = '#3a3a46';
+      gctx.lineWidth = 1;
+      gctx.beginPath();
+      gctx.moveTo(x + 0.5, 0);
+      gctx.lineTo(x + 0.5, TL_H);
+      gctx.stroke();
+      // 小节号（001、002…，标准 DAW 风格）
+      gctx.fillStyle = '#8b8b96';
+      gctx.fillText(String(bar + 1).padStart(3, '0'), x + 4, TL_H / 2 + 0.5);
+      // 拍子刻度（每小节 4 拍，小节头外的拍子用短线）
+      for (let beat = 1; beat < 4; beat++) {
+        const bx = x + beat * beatSec * zx;
+        gctx.strokeStyle = '#26262e';
+        gctx.lineWidth = 1;
+        gctx.beginPath();
+        gctx.moveTo(bx + 0.5, TL_H - 6);
+        gctx.lineTo(bx + 0.5, TL_H);
+        gctx.stroke();
+      }
+    }
+    timelineGridInfoRef.current = { w: logicalW, maxSec, zx, bpm: bpmV };
+    // 可见 timeline 由下面的 [track.notes/zoomX/bpm] effect 同步刷新，无需主画布重绘
+  }, [track.notes, zoomX, bpm]);
+
+  // v12：绘制可见 timeline（静态层 blit + 播放头标记）
+  const drawTimeline = useCallback((time) => {
+    const canvas = timelineCanvasRef.current;
+    const sc = scrollRef.current;
+    if (!canvas || !sc) return;
+    const tg = timelineGridRef.current;
+    const info = timelineGridInfoRef.current;
+    if (!tg || info.w === 0) return;
+    const viewW = sc.clientWidth;
+    const physW = Math.round(viewW * DPR);
+    if (canvas.width !== physW) canvas.width = physW;
+    if (canvas.height !== Math.round(TL_H * DPR)) canvas.height = Math.round(TL_H * DPR);
+    if (canvas.style.width !== viewW + 'px') canvas.style.width = viewW + 'px';
+    canvas.style.height = TL_H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, viewW, TL_H);
+    // 静态层：与滚动同步（源坐标 = 可见窗口在逻辑坐标里的位置）
+    const scrollLeft = sc.scrollLeft;
+    const srcX = Math.max(0, Math.min(info.w - 1, scrollLeft * DPR));
+    const srcW = Math.min(viewW * DPR, tg.width - srcX);
+    if (srcW > 0) {
+      ctx.drawImage(tg, srcX, 0, srcW, tg.height, 0, 0, srcW / DPR, TL_H);
+    }
+    // 播放头标记（与主画布播放头同色；暂停/停止后的 seek 也显示）
+    if (time > 0) {
+      const px = time * zoomXRef.current - scrollLeft;
+      if (px >= -2 && px <= viewW + 2) {
+        ctx.fillStyle = '#cc4444';
+        // 小三角指示器 + 竖线
+        ctx.beginPath();
+        ctx.moveTo(px - 4, 0);
+        ctx.lineTo(px + 4, 0);
+        ctx.lineTo(px, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillRect(px - 0.75, 4, 1.5, TL_H - 4);
+      }
+    }
+  }, []);
+
+  // timeline 点击定位（v12：点击小节/拍位置 → onSeek(sec)，拖动可连续定位）
+  const handleTimelineSeek = useCallback((clientX) => {
+    const canvas = timelineCanvasRef.current;
+    const sc = scrollRef.current;
+    if (!canvas || !sc) return;
+    const rect = canvas.getBoundingClientRect();
+    const lx = clientX - rect.left + sc.scrollLeft;  // 加回滚动偏移 → 逻辑坐标
+    const sec = Math.max(0, lx / zoomXRef.current);
+    if (onSeek) onSeek(sec);
+    drawTimeline(sec);
+  }, [onSeek, drawTimeline]);
+
+  // timeline 初始/尺寸变化重绘
+  useEffect(() => {
+    drawTimeline(0);
+    const onResize = () => drawTimeline(0);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [drawTimeline, track.notes, zoomX, bpm]);
 
   // 稳定的 draw 函数 - 使用 refs 读取最新值
   const draw = useCallback(() => {
@@ -291,7 +407,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
           ctx.fillRect(0, i * zy - oy, logicalW, zy);
         }
       }
-      const beatSec = 60 / 120;
+      const beatSec = 60 / (bpmRef.current || 120);
       const startBeat = Math.max(0, Math.floor(ox / (beatSec * zx)));
       const endBeat = Math.min(Math.ceil(maxSec / beatSec) + 1, Math.ceil((ox + logicalW) / (beatSec * zx)) + 1);
       for (let b = startBeat; b <= endBeat; b++) {
@@ -461,12 +577,16 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       // v6: 节流到 ~20fps（50ms），减少移动设备 canvas 重绘开销
       if (ts - lastTime < 50) { rafRef.current = requestAnimationFrame(animate); return; }
       lastTime = ts;
-      if (getPlaybackTime) drawPlayhead(getPlaybackTime());
+      if (getPlaybackTime) {
+        const tNow = getPlaybackTime();
+        drawPlayhead(tNow);
+        drawTimeline(tNow);
+      }
       rafRef.current = requestAnimationFrame(animate);
     };
     rafRef.current = requestAnimationFrame(animate);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [isPlaying, drawPlayhead, getPlaybackTime]);
+  }, [isPlaying, drawPlayhead, drawTimeline, getPlaybackTime]);
 
   // P6 编排概览：所有轨道在同一时间线上的迷你总览
   const drawArrange = useCallback(() => {
@@ -1108,6 +1228,23 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
         </div>
       )}
 
+      {/* v12：顶部 timeline bar（小节号 + 拍刻度 + 播放头 + 点击/触摸定位） */}
+      <div style={{ display: 'flex', height: 20, flexShrink: 0, borderBottom: '1px solid var(--border)', background: '#121216' }}>
+        <div style={{ width: KEY_W, flexShrink: 0, background: '#16161b', borderRight: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', letterSpacing: 0.5 }}>{bpmRef.current} BPM</span>
+        </div>
+        <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+          <canvas
+            ref={timelineCanvasRef}
+            style={{ display: 'block', cursor: 'pointer', touchAction: 'none' }}
+            onMouseDown={(e) => handleTimelineSeek(e.clientX)}
+            onMouseMove={(e) => { if (e.buttons === 1) handleTimelineSeek(e.clientX); }}
+            onTouchStart={(e) => { if (e.touches[0]) { e.preventDefault(); handleTimelineSeek(e.touches[0].clientX); } }}
+            onTouchMove={(e) => { if (e.touches[0]) { e.preventDefault(); handleTimelineSeek(e.touches[0].clientX); } }}
+          />
+        </div>
+      </div>
+
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         <div style={{ width: KEY_W, flexShrink: 0, background: 'var(--track-bg)', borderRight: '1px solid var(--border)', overflow: 'hidden', position: 'relative' }}>
           <canvas ref={keyboardCanvasRef} style={{ display: 'block', cursor: 'pointer', transform: 'translateY(0px)' }} onMouseDown={handleKeyboardClick} onTouchStart={(e) => { if (e.touches[0]) handleKeyboardClick(e.touches[0]); }} />
@@ -1117,6 +1254,7 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
           offsetYRef.current = e.target.scrollTop;
           if (keyboardCanvasRef.current) keyboardCanvasRef.current.style.transform = `translateY(${-e.target.scrollTop}px)`;
           requestRedraw();
+          drawTimeline(0);  // v12：timeline 与滚动同步
           if (showArrange) drawArrange();
         }}>
           <canvas ref={canvasRef} width={800} height={300} style={{ display: 'block', touchAction: editMode === 'pointer' ? 'pan-x pan-y' : 'none' }} />

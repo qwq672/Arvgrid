@@ -146,6 +146,29 @@ export const tauriAudio = {
     }
   },
 
+  // v12：通道音色切换（bank select + program change）
+  // 旧版桌面端从未发过 program change——所有旋律轨都是钢琴音色
+  async setProgram(channel, bank, program) {
+    const invoke = await getInvoke();
+    if (!invoke) return;
+    try {
+      await invoke('set_program', { channel, bank, program });
+    } catch (e) {
+      console.warn('[tauri-bridge] set_program failed:', e?.message || e);
+    }
+  },
+
+  // v12：通道音量（CC#7，0-127）——调音台推子
+  async setChannelVolume(channel, volume) {
+    const invoke = await getInvoke();
+    if (!invoke) return;
+    try {
+      await invoke('set_channel_volume', { channel, volume });
+    } catch (e) {
+      console.warn('[tauri-bridge] set_channel_volume failed:', e?.message || e);
+    }
+  },
+
   async audioInfo() {
     const invoke = await getInvoke();
     if (!invoke) return null;
@@ -188,6 +211,18 @@ export const tauriAudio = {
       return await invoke('get_sample_counter');
     } catch (e) {
       return 0;
+    }
+  },
+
+  // v12：重置采样计数器 + 清空调度队列（每次播放/恢复前必须调用，
+  // 否则旧计数把新调度的前 N 秒事件瞬间全部触发——桌面端音符堆爆的根源）
+  async resetSampleCounter() {
+    const invoke = await getInvoke();
+    if (!invoke) return;
+    try {
+      await invoke('reset_sample_counter');
+    } catch (e) {
+      console.warn('[tauri-bridge] reset_sample_counter failed:', e?.message || e);
     }
   },
 };
