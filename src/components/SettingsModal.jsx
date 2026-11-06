@@ -103,6 +103,19 @@ export default function SettingsPanel({
   const wasmSupported = isWasmSupported();
   const t = useTranslation(lang);
 
+  // ⚠️ 所有 hooks 必须在 `if (!open) return null` 之前无条件执行：
+  // 本组件常驻挂载（open=false 时提前返回）。v12 曾把 setOutputSink 放在
+  // 提前返回之后 → open 翻 true 时 hook 数比上次渲染多一个 → React #310
+  // → 整棵树崩溃黑屏（打开设置面板即全站挂掉）。已修复并固化顺序。
+  const setOutputSink = useCallback(async (deviceId) => {
+    if (deviceId && audioCtxRef && audioCtxRef.current
+      && typeof audioCtxRef.current.setSinkId === 'function') {
+      try { await audioCtxRef.current.setSinkId(deviceId); } catch (err) {
+        console.warn('Failed to set audio output device:', err);
+      }
+    }
+  }, []);
+
   if (!open) return null;
 
   const handleWasmToggle = (enabled) => {
@@ -135,15 +148,6 @@ export default function SettingsPanel({
     if (!search) return true;
     return text.toLowerCase().includes(search.toLowerCase());
   };
-
-  const setOutputSink = useCallback(async (deviceId) => {
-    if (deviceId && audioCtxRef && audioCtxRef.current
-      && typeof audioCtxRef.current.setSinkId === 'function') {
-      try { await audioCtxRef.current.setSinkId(deviceId); } catch (err) {
-        console.warn('Failed to set audio output device:', err);
-      }
-    }
-  }, []);
 
   // 与 useAudioEngine 的 BUFFER_PRESETS 保持一致
   const bufsize = (typeof bufferSize === 'number') ? bufferSize :
