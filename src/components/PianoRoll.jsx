@@ -54,7 +54,13 @@ function lowerBound(arr, target, keyFn) {
   return lo;
 }
 
-export default function PianoRoll({ track, trackColor = '#888', ghostTracks = [], tracks = [], currentTrackId = null, onNotesChange, playNote, isPlaying, getPlaybackTime, lang = 'zh', editMode = 'pointer', quantizeValue = '1/4', bpm = 120, onSeek = null }) {
+// v15：拆为「零 hook 包装层 + 恒定 hook 的内层」——早退守卫必须发生在
+// 调用任何 hook 之前，否则 track/notes 有无会导致两次渲染 hook 数量不同，
+// 触发 React #310 'Rendered more hooks than during the previous render'，
+// 整棵树卸载 → 深色主题下纯黑屏（同 v14 修掉的 SettingsModal 黑屏根因）。
+// 包装层 PianoRoll（文件末尾 export default）不含任何 hook，早退合法；
+// PianoRollInner 只在 track.notes 就绪后挂载，hook 数量恒定。
+function PianoRollInner({ track, trackColor = '#888', ghostTracks = [], tracks = [], currentTrackId = null, onNotesChange, playNote, isPlaying, getPlaybackTime, lang = 'zh', editMode = 'pointer', quantizeValue = '1/4', bpm = 120, onSeek = null }) {
   const canvasRef = useRef(null);
   const playheadCanvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -130,7 +136,9 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
   useEffect(() => { marqueeRectRef.current = marqueeRect; }, [marqueeRect]);
   useEffect(() => { snapModeRef.current = snapMode; }, [snapMode]);
 
-  if (!track || !track.notes) return null;
+  // v15：原「if (!track || !track.notes) return null;」守卫已上移到文件末尾的
+  // PianoRoll 包装层——此处再早退会导致下方 hook 数量随 track 有无变化（React #310）。
+  // Inner 仅在 track && track.notes 就绪后才会被挂载，以下 hook 无条件执行。
 
   const qStep = parseQ(quantizeValue);
 
@@ -1309,4 +1317,14 @@ export default function PianoRoll({ track, trackColor = '#888', ghostTracks = []
       )}
     </div>
   );
+}
+
+// v15：零 hook 包装层——早退守卫在调用任何 hook 之前完成，绝对安全。
+// track/notes 缺失 → 渲染 null（与旧行为一致）；就绪 → 挂载 PianoRollInner，
+// 其 hook 数量在生命周期内恒定，杜绝 React #310 整树卸载黑屏。
+// ⚠️ 后续给 PianoRoll 加 hook 时：要么加进 Inner（注意 Inner 挂载前提是
+// track.notes 就绪），要么加在这里并保证守卫之后不调用任何 hook。
+export default function PianoRoll(props) {
+  if (!props.track || !props.track.notes) return null;
+  return <PianoRollInner {...props} />;
 }
