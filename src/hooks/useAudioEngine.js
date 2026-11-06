@@ -53,6 +53,178 @@ const BUFFER_PRESETS = {
 // 超过 15 条旋律轨时循环复用（极少见）
 const NON_DRUM_CHANNELS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15];
 
+// ============ v13 防回退加固：WASM 链路自愈辅助函数（组件外纯函数） ============
+
+// 健康检查：worklet 是否存活（带 nonce 防 pong 串扰）
+function pingWorklet(node, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const nonce = Math.random();
+    const to = setTimeout(() => {
+      node.port.removeEventListener('message', handler);
+      resolve(false);
+    }, timeoutMs);
+    const handler = (e) => {
+      if (e.data?.type === 'pong' && e.data?.nonce === nonce) {
+        clearTimeout(to);
+        node.port.removeEventListener('message', handler);
+        resolve(true);
+      }
+    };
+    node.port.addEventListener('message', handler);
+    node.port.postMessage({ type: 'ping', nonce });
+  });
+}
+
+// 等待 worklet 的 wasm-ready/init-error 确认。
+// 关键：AudioContext suspended（autoplay 策略）时超时【不计时】——
+// 否则"用户还没点页面"会被误判成"WASM 初始化失败"→ 假性回退 JS。
+// runningBudgetMs 只在 ctx 实际 running 时累计；wallBudgetMs 为挂墙总上限
+// （防 ctx 永远挂起导致 initAudio 永不 resolve）。
+function awaitWasmReady(ctx, node, { runningBudgetMs = 15000, wallBudgetMs = 120000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    let runningAccum = 0;
+    let last = performance.now();
+    let settled = false;
+    const finish = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      node.port.removeEventListener('message', handler);
+      fn(arg);
+    };
+    const handler = (e) => {
+      if (e.data?.type === 'wasm-ready' || e.data?.type === 'processor-ready') {
+        finish(resolve);
+      } else if (e.data?.type === 'init-error') {
+        finish(reject, new Error(e.data.message || 'worklet init error'));
+      }
+    };
+    node.port.addEventListener('message', handler);
+    const poll = setInterval(() => {
+      const now = performance.now();
+      if (ctx.state === 'running') runningAccum += now - last;
+      last = now;
+      if (runningAccum >= runningBudgetMs || now - t0 >= wallBudgetMs) {
+        finish(reject, new Error(ctx.state !== 'running'
+          ? `AudioContext ${ctx.state}（等待用户交互 ${Math.round((now - t0) / 1000)}s，未确认）`
+          : 'WASM init 确认超时'));
+      }
+    }, 250);
+    // 立即检查一次（消息可能早已到达）
+    setTimeout(() => {
+      const now = performance.now();
+      if (ctx.state !== 'running' && now - t0 >= wallBudgetMs) {
+        finish(reject, new Error('挂墙超时且 ctx 未运行'));
+      }
+    }, 0);
+  });
+}
+
+// WASM 字节获取：2 路径 × 每路径 3 次重试（退避 400ms/800ms）。
+// 网络抖动 / CDN 瞬断不再直接判死回退 JS。
+async function fetchWasmBytes() {
+  const paths = [
+    'wasm/audio_core_bg.wasm',
+    new URL('wasm/audio_core_bg.wasm', location.href).href,
+  ];
+  let lastError = null;
+  for (const path of paths) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const resp = await fetch(path, { redirect: 'follow' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const bytes = await resp.arrayBuffer();
+        console.log(`[arvgrid WASM] fetch 成功: ${path}（${bytes.byteLength} bytes，第 ${attempt} 次尝试）`);
+        return bytes;
+      } catch (err) {
+        lastError = err;
+        console.warn(`[arvgrid WASM] fetch 失败 (${path}, 尝试 ${attempt}/3):`, err.message);
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 400 * attempt));
+      }
+    }
+  }
+  throw new Error('WASM fetch failed: ' + (lastError?.message || 'unknown'));
+}
+
+// 发送 init-wasm-bytes 并等待确认；确认超时先 ping——
+// pong 到了说明 worklet 活着、只是那条 init 消息丢了（Rocket Loader 等竞态），
+// 安全重发一次而不是直接回退 JS。
+// 注意：wasmBytes 会被 transfer 消费，因此每次发送都用 slice 副本，原件留给重试。
+async function sendInitAndWait(ctx, node, wasmBytes, polyphony) {
+  const send = () => {
+    const copy = wasmBytes.slice(0);
+    node.port.postMessage({ type: 'init-wasm-bytes', wasmBytes: copy, polyphony }, [copy]);
+  };
+  send();
+  try {
+    await awaitWasmReady(ctx, node);
+  } catch (err) {
+    console.warn('[arvgrid WASM] init 确认未到，ping worklet 自愈中…:', err.message);
+    const alive = await pingWorklet(node);
+    if (!alive) throw err; // worklet 真死（消息通道不通），交给上层重建 node
+    console.log('[arvgrid WASM] worklet 存活（pong 收到）——init 消息曾丢失，重发…');
+    send();
+    await awaitWasmReady(ctx, node);
+  }
+}
+
+// v13：发送 load-sf2 并等待确认。
+// - 动态超时：30s 起步，按 8MB/s 随文件大小放宽（2GB SF2 ≈ 262s）
+//   ——固定 30s 对大文件是必然的假性超时 → 假性回退
+// - worklet 收到消息会立刻回 load-started：收到即刷新超时窗口
+//   （大文件 rustysynth 同步解析是合法阻塞，不是"死了"）
+// - 超时后 ping：worklet 活着说明只是消息丢失，安全重发一次；
+//   ping 不通才真正失败（交给上层回退 JS）
+async function sendLoadSf2AndWait(node, arrayBuffer) {
+  const baseTimeoutMs = Math.max(30000, 10000 + (arrayBuffer.byteLength / (8 * 1024 * 1024)) * 1000);
+  const sendOnce = () => {
+    const copy = arrayBuffer.slice(0);
+    node.port.postMessage({ type: 'load-sf2', data: copy }, [copy]);
+  };
+  const waitOnce = () => new Promise((resolve, reject) => {
+    let to = setTimeout(() => {
+      node.port.removeEventListener('message', handler);
+      reject(new Error(`WASM SF2 load timeout (${Math.round(baseTimeoutMs / 1000)}s)`));
+    }, baseTimeoutMs);
+    const handler = (e) => {
+      const msg = e.data;
+      if (msg.type === 'load-success') {
+        clearTimeout(to);
+        node.port.removeEventListener('message', handler);
+        resolve();
+      } else if (msg.type === 'load-error') {
+        clearTimeout(to);
+        node.port.removeEventListener('message', handler);
+        reject(new Error(msg.message || 'WASM SF2 load failed'));
+      } else if (msg.type === 'load-started') {
+        // v13：消息已到达 worklet，正在解析——重置超时窗口
+        console.log('[arvgrid WASM] load-started 收到（size=' + msg.size + '），worklet 正在解析…');
+        clearTimeout(to);
+        to = setTimeout(() => {
+          node.port.removeEventListener('message', handler);
+          reject(new Error(`WASM SF2 parse timeout (${Math.round(baseTimeoutMs / 1000)}s after started)`));
+        }, baseTimeoutMs);
+      }
+    };
+    node.port.addEventListener('message', handler);
+  });
+  sendOnce();
+  try {
+    return await waitOnce();
+  } catch (err) {
+    if (String(err.message || '').includes('timeout')) {
+      const alive = await pingWorklet(node);
+      if (alive) {
+        console.warn('[arvgrid WASM] SF2 load 超时但 worklet 存活（pong）——重发 load-sf2 自愈…');
+        sendOnce();
+        return await waitOnce();
+      }
+    }
+    throw err;
+  }
+}
+
 export function useAudioEngine() {
   const audioCtxRef = useRef(null);
   const masterGainRef = useRef(null);
@@ -223,6 +395,14 @@ export function useAudioEngine() {
   const workletReadyRef = useRef(false); // worklet 是否已成功注册并加载
   const workletSampleIdCounterRef = useRef(0); // worklet sample ID 计数器
   const workletBackendRef = useRef('js'); // 'js' 或 'wasm'
+  // v13 防回退加固：引擎状态可见化（Settings 面板/诊断用）
+  const [engineStatus, setEngineStatus] = useState('init'); // 'init' | 'wasm' | 'js'
+  const fallbackReasonRef = useRef(null); // 最近一次回退原因（null = 未回退）
+  const wasmBytesRef = useRef(null); // 已下载的 WASM 字节（node 重建重试复用，免二次下载）
+  const workletRenderListenerRef = useRef(null); // v13：render 自愈事件监听（防复挂）
+  const engineStatusRef = useRef('init');
+  const initInflightRef = useRef(null); // v13：initAudio 并发守卫（同 promise 等待）
+  useEffect(() => { engineStatusRef.current = engineStatus; }, [engineStatus]);
 
   useEffect(() => { soundSourceRef.current = soundSource; }, [soundSource]);
   useEffect(() => { metronomeOnRef.current = metronomeOn; }, [metronomeOn]);
@@ -254,6 +434,7 @@ export function useAudioEngine() {
       workletNodeRef.current = workletNode;
       workletReadyRef.current = true;
       workletBackendRef.current = 'js';
+      if (engineStatusRef.current !== 'wasm') setEngineStatus('js');
       // 初始复音数同步到 worklet
       workletNode.port.postMessage({
         type: 'set-polyphony',
@@ -267,6 +448,11 @@ export function useAudioEngine() {
 
   const initAudio = useCallback(async () => {
     if (audioCtxRef.current) return audioCtxRef.current;
+    // v13：inflight 守卫——并发调用（React StrictMode 双 mount、连续操作）
+    // 会立即返回未完成 init 的 ctx，导致 loadSF2 读到 workletBackend='js'
+    // 而假性走 JS 路径。所有并发方必须等同一个初始化 promise。
+    if (initInflightRef.current) return initInflightRef.current;
+    const p = (async () => {
     // 移动设备限制 sampleRate 到 44100Hz（默认可能是 48000）
     // CPU 占用减少 ~10%，音质差异人耳难察觉
     const ctxOptions = { latencyHint: 'interactive' };
@@ -420,7 +606,7 @@ export function useAudioEngine() {
         console.log('[arvgrid WASM] Step 1: loading wasm-sf2-processor.js module...');
         // v11：worklet 改为静态 import + initSync（WorkletGlobalScope 禁止动态 import），
         // 版本号同步 bump，强制刷新旧缓存（否则浏览器拿到的还是旧坏文件）
-        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=11', location.href).href;
+        const workletUrl = new URL('worklets/wasm-sf2-processor.js?v=13', location.href).href;
         console.log('[arvgrid WASM] worklet URL:', workletUrl);
         await ctx.audioWorklet.addModule(workletUrl);
         console.log('[arvgrid WASM] Step 2: module loaded, creating AudioWorkletNode...');
@@ -437,11 +623,12 @@ export function useAudioEngine() {
         console.log('[arvgrid WASM] Step 3: AudioWorkletNode created');
 
         // v12 关键修复：等待 AudioContext 真正 running 再发初始化消息。
-        // 浏览器自动播放策略下，挂起态（suspended）的音频线程不投递 port 消息——
-        // init-wasm-bytes 发出去 worklet 永远收不到，Step 6 必然超时 → 假性回退 JS。
-        // （旧版 JS worklet "能用"只是因为它不需要确认消息。）
+        // v13 强化：等待上限 60 秒，超时【放行继续】而不是抛错回退——
+        //   - 抛错回退 = "用户 30 秒没点页面就永久用 JS 引擎"（高频假性回退）
+        //   - 放行后 init 消息若丢失，awaitWasmReady 的 ping-重发链路会自愈；
+        //     挂墙上限（120s）兜底，不会永远吊住 initAudio
         if (ctx.state !== 'running') {
-          console.log('[arvgrid WASM] Step 3.5: AudioContext suspended（autoplay 策略），等待 running…');
+          console.log('[arvgrid WASM] Step 3.5: AudioContext suspended（autoplay 策略），等待 running（≤60s）…');
           await new Promise((resolve) => {
             let done = false;
             const finish = () => { if (!done) { done = true; cleanup(); resolve(); } };
@@ -452,85 +639,53 @@ export function useAudioEngine() {
             };
             const poll = setInterval(() => { if (ctx.state === 'running') finish(); }, 200);
             ctx.addEventListener('statechange', onState);
-            // 30 秒兜底（用户始终未交互就放行，让超时逻辑接管 fallback）
-            setTimeout(finish, 30000);
+            setTimeout(finish, 60000); // v13：放行继续（确认等待对 suspended 不计时）
           });
-          if (ctx.state !== 'running') {
-            // 仍未运行（用户从未交互）：抛出让 catch 走 JS worklet fallback
-            // （JS worklet 不依赖确认消息，挂起态也能完成加载）
-            throw new Error('AudioContext 未能启动（等待用户交互）');
-          }
         }
 
-        // 主动预加载 WASM 字节并推送给 worklet
-        // 不等 worklet 请求（request-response 在 Cloudflare Rocket Loader 下消息丢失）
-        // 直接 fetch → 推送，消除竞态条件
-        console.log('[arvgrid WASM] Step 4: proactively fetching WASM bytes...');
-        const wasmPaths = [
-          'wasm/audio_core_bg.wasm',
-          './wasm/audio_core_bg.wasm',
-          new URL('wasm/audio_core_bg.wasm', location.href).href,
-        ];
-
-        let wasmBytes = null;
-        let lastError = null;
-        for (let i = 0; i < wasmPaths.length; i++) {
-          const path = wasmPaths[i];
-          try {
-            console.log(`[arvgrid WASM] Step 4.${i+1}: trying path: ${path}`);
-            const resp = await fetch(path, { redirect: 'follow' });
-            if (!resp.ok) {
-              console.warn(`[arvgrid WASM] path ${i+1} failed: HTTP ${resp.status}`);
-              lastError = new Error(`HTTP ${resp.status}`);
-              continue;
-            }
-            wasmBytes = await resp.arrayBuffer();
-            console.log(`[arvgrid WASM] Step 4.${i+1} success: ${wasmBytes.byteLength} bytes`);
-            break;
-          } catch (err) {
-            console.warn(`[arvgrid WASM] path ${i+1} error:`, err.message);
-            lastError = err;
-          }
+        // v13：WASM 字节获取（2 路径 × 3 重试）；成功后留在 ref，
+        // node 级重试无需重新下载
+        console.log('[arvgrid WASM] Step 4: fetching WASM bytes (with retry)...');
+        if (!wasmBytesRef.current) {
+          wasmBytesRef.current = await fetchWasmBytes();
         }
+        const wasmBytes = wasmBytesRef.current;
 
-        if (!wasmBytes) {
-          console.error('[arvgrid WASM] All fetch attempts failed:', lastError?.message);
-          throw new Error('WASM fetch failed: ' + (lastError?.message || 'unknown'));
-        }
+        // v13：复音数下发——实测 256 复音 0.275ms/量子（预算 2.667ms，
+        // 余量 ~10×）；rustysynth 硬上限 256。移动端保守 128。
+        const polyphony = IS_MOBILE ? 128 : 256;
 
-        console.log('[arvgrid WASM] Step 5: sending WASM bytes to worklet...');
-        workletNode.port.postMessage({
-          type: 'init-wasm-bytes',
-          wasmBytes,
-        }, [wasmBytes]);
-        console.log('[arvgrid WASM] Step 5 done: WASM bytes sent to worklet');
-
-        // 等待 worklet 确认 WASM 初始化完成
-        await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            console.error('[arvgrid WASM] Step 6 timeout: worklet did not confirm WASM init');
-            reject(new Error('WASM init timeout'));
-          }, 10000);
-          const handler = (e) => {
-            if (e.data?.type === 'wasm-ready' || e.data?.type === 'processor-ready') {
-              console.log('[arvgrid WASM] Step 6: worklet confirmed ready');
-              clearTimeout(timeout);
-              workletNode.port.removeEventListener('message', handler);
-              resolve();
-            } else if (e.data?.type === 'init-error') {
-              console.error('[arvgrid WASM] Step 6: worklet init error:', e.data.message);
-              clearTimeout(timeout);
-              workletNode.port.removeEventListener('message', handler);
-              reject(new Error(e.data.message));
-            }
-          };
-          workletNode.port.addEventListener('message', handler);
-        });
+        console.log('[arvgrid WASM] Step 5: sending WASM bytes to worklet (polyphony=' + polyphony + ')...');
+        await sendInitAndWait(ctx, workletNode, wasmBytes, polyphony);
 
         console.log('[arvgrid WASM] WASM backend fully initialized');
+        setEngineStatus('wasm');
       } catch (err) {
-        console.warn('[arvgrid WASM] Failed to init, falling back to JS worklet:', err);
-        await loadJsWorkletImpl(ctx, noteBus);
+        // v13：先 node 级重试一次（重建 AudioWorkletNode 复用已下载的
+        // wasm 字节），仍失败才真正回退 JS——大幅缩小"回退 JS"的触发面
+        console.warn('[arvgrid WASM] init 首次失败，尝试重建 worklet node 重试…:', err.message || err);
+        try {
+          if (workletNodeRef.current) {
+            try { workletNodeRef.current.disconnect(); } catch (e) { /* ignore */ }
+            workletNodeRef.current = null;
+          }
+          const retryNode = new AudioWorkletNode(ctx, 'wasm-sf2-processor', {
+            numberOfInputs: 0,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+          });
+          retryNode.connect(noteBus);
+          workletNodeRef.current = retryNode;
+          const polyphony = IS_MOBILE ? 128 : 256;
+          await sendInitAndWait(ctx, retryNode, wasmBytesRef.current, polyphony);
+          console.log('[arvgrid WASM] node 重建重试成功——仍为 WASM 引擎');
+          setEngineStatus('wasm');
+        } catch (err2) {
+          fallbackReasonRef.current = `${err?.message || err} | retry: ${err2?.message || err2}`;
+          console.warn('[arvgrid WASM] 重试仍失败，回退 JS worklet。原因:', fallbackReasonRef.current);
+          setEngineStatus('js');
+          await loadJsWorkletImpl(ctx, noteBus);
+        }
       }
     } else {
       console.log('[arvgrid] WASM not enabled or not supported, using JS worklet');
@@ -538,6 +693,15 @@ export function useAudioEngine() {
     }
 
     return ctx;
+    })();
+    initInflightRef.current = p;
+    try {
+      return await p;
+    } finally {
+      // 无论成败都清掉：成功后 audioCtxRef.current 已设置（走首分支）；
+      // 失败（如无音频设备）允许下次调用重试，不缓存 rejected promise
+      initInflightRef.current = null;
+    }
   }, [loadJsWorkletImpl]);
 
   function generateReverbIR(ctx, duration, decay) {
@@ -1662,6 +1826,10 @@ export function useAudioEngine() {
     },
     audioCtxRef,
     soundSource,
+    // v13：引擎状态可见化——'init' | 'wasm' | 'js'；
+    // fallbackReason 为最近一次回退原因（null = 从未回退）
+    engineStatus,
+    fallbackReason: fallbackReasonRef.current,
     setSoundSource,
     loadSF2: async (arrayBuffer, onProgress) => {
       await initAudio();
@@ -1683,34 +1851,24 @@ export function useAudioEngine() {
           console.log('[arvgrid WASM] loadSF2: sending SF2 to worklet, size:', arrayBuffer.byteLength);
           if (onProgress) onProgress({ stage: 'wasm-loading', percent: 50 });
 
-          const sf2Copy = arrayBuffer.slice(0);
           try {
-            await new Promise((resolve, reject) => {
-              const handler = (e) => {
-                const msg = e.data;
-                if (msg.type === 'load-success') {
-                  console.log('[arvgrid WASM] loadSF2: worklet confirmed SF2 loaded');
-                  workletNodeRef.current.port.removeEventListener('message', handler);
-                  resolve();
-                } else if (msg.type === 'load-error') {
-                  console.error('[arvgrid WASM] loadSF2: worklet reported error:', msg.message);
-                  workletNodeRef.current.port.removeEventListener('message', handler);
-                  reject(new Error(msg.message || 'WASM SF2 load failed'));
-                }
-              };
-              workletNodeRef.current.port.addEventListener('message', handler);
-              workletNodeRef.current.port.postMessage({
-                type: 'load-sf2',
-                data: sf2Copy,
-              }, [sf2Copy]);
-              // 超时保护（30 秒）——超时后自动 fallback 到 JS 路径
-              setTimeout(() => {
-                workletNodeRef.current?.port.removeEventListener('message', handler);
-                reject(new Error('WASM SF2 load timeout (30s)'));
-              }, 30000);
-            });
+            await sendLoadSf2AndWait(workletNodeRef.current, arrayBuffer);
 
             if (onProgress) onProgress({ stage: 'done', percent: 100, backend: 'wasm' });
+            // v13：worklet render 自愈事件监听（复挂防抖：先移除旧 handler）
+            if (workletRenderListenerRef.current && workletNodeRef.current) {
+              workletNodeRef.current.port.removeEventListener('message', workletRenderListenerRef.current);
+            }
+            const renderListener = (e) => {
+              if (e.data?.type === 'render-recovered') {
+                console.warn('[arvgrid WASM] worklet render 异常已自愈重建（播放不中断，音色状态重置）');
+              } else if (e.data?.type === 'render-fatal') {
+                console.error('[arvgrid WASM] worklet render 自愈失败（已静音，建议重载 SF2）:', e.data.message);
+                fallbackReasonRef.current = 'render-fatal: ' + (e.data.message || '');
+              }
+            };
+            workletRenderListenerRef.current = renderListener;
+            workletNodeRef.current.port.addEventListener('message', renderListener);
             // v12：WASM 模式不再在主线程同步 parseSF2（大 SF2 会冻结 UI 数秒）
             // - 原始字节保留给导出（wasm 离线渲染 worker 直接吃原始字节）
             // - JS 回退用的 sf2Data 改由 worker 异步解析，不阻塞 UI
@@ -1724,9 +1882,13 @@ export function useAudioEngine() {
             setSoundSource('sf2');
             return { success: true, name: 'SF2 (WASM)' };
           } catch (wasmErr) {
+            // v13：只有真失败才回退（sendLoadSf2AndWait 内部已做过
+            // 动态超时 + load-started 窗口刷新 + ping 重发自愈）
             // WASM 失败时自动 fallback 到 JS 路径，不报错给用户
             console.warn('[arvgrid] WASM SF2 load failed, falling back to JS:', wasmErr.message);
             if (onProgress) onProgress({ stage: 'wasm-fallback', message: wasmErr.message });
+            fallbackReasonRef.current = 'SF2 load: ' + (wasmErr.message || '');
+            setEngineStatus('js');
             // 重新加载 JS worklet（之前加载的是 WASM worklet）
             const ctx = audioCtxRef.current;
             if (ctx && noteBusRef.current) {

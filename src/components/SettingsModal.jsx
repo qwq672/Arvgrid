@@ -25,6 +25,8 @@ export default function SettingsPanel({
   noteOverlap, onNoteOverlapChange,
   delayTime, onDelayTimeChange, delayFeedback, onDelayFeedbackChange,
   audioCtxRef,  // 音频上下文引用（用于输出设备选择）
+  // v13：引擎实时状态（'init' | 'wasm' | 'js'）与最近回退原因（可选）
+  engineStatus, fallbackReason,
   // 自动化（时间曲线）
   automation, onAutomationChange, onAutomationClear,
   autoCurrentTime, autoDuration,
@@ -236,6 +238,25 @@ export default function SettingsPanel({
                   <div style={{ fontWeight: 600 }}>
                     {lang === 'zh' ? 'WASM SF2 解析器' : 'WASM SF2 Parser'}
                   </div>
+                  {/* v13：引擎实时状态——防回退可见化（未传 props 时不显示） */}
+                  {engineStatus && (
+                    <div style={{
+                      fontSize: '0.65rem', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6,
+                      color: engineStatus === 'wasm' ? 'var(--accent, #4ade80)' : 'var(--text-muted)',
+                    }}>
+                      <span style={{
+                        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                        background: engineStatus === 'wasm' ? 'var(--accent, #4ade80)' : engineStatus === 'js' ? '#f59e0b' : 'var(--text-muted)',
+                      }} />
+                      <span>
+                        {engineStatus === 'wasm'
+                          ? (lang === 'zh' ? 'WASM 引擎运行中（rustysynth）' : 'WASM engine active (rustysynth)')
+                          : engineStatus === 'js'
+                            ? (lang === 'zh' ? '当前：JS 引擎' + (fallbackReason ? '（回退原因：' + fallbackReason + '，详见控制台）' : '') : 'Current: JS engine' + (fallbackReason ? ' (fallback: ' + fallbackReason + ')' : ''))
+                            : (lang === 'zh' ? '初始化中…' : 'Initializing…')}
+                      </span>
+                    </div>
+                  )}
                   <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>
                     {wasmSupported
                       ? (lang === 'zh'

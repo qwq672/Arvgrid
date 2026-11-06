@@ -432,6 +432,9 @@ const Editor = memo(({
         sf2Name={sf2Name}
         bufferSize={audioEngine.bufferSize}
         onBufferSizeChange={audioEngine.setBufferSize}
+        // v13：引擎实时状态（防回退可见化）
+        engineStatus={audioEngine.engineStatus}
+        fallbackReason={audioEngine.fallbackReason}
         // 全局效果器
         eqLow={eqLow} onEqLowChange={setEqLow}
         eqMid={eqMid} onEqMidChange={setEqMid}
