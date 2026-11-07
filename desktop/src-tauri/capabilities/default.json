@@ -10,6 +10,15 @@
     "core:app:default",
     "core:resources:default",
     "core:menu:default",
-    "core:tray:default"
+    "core:tray:default",
+    "dialog:default",
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "$TEMP/arvgrid_sf2_*" }]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [{ "path": "$TEMP/arvgrid_sf2_*" }]
+    }
   ]
 }

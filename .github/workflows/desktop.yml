@@ -1,14 +1,22 @@
 name: Desktop
 
 # 构建 Tauri 桌面端（Windows / macOS / Linux）
-# 触发条件：desktop/ 目录变更时
-# 不影响网页端 deploy.yml
+# v16：触发路径扩展到 src/public/audio-core——桌面壳打包的是 dist/，
+# 前端修复（如 v14 设置黑屏 / v15 PianoRoll）同样需要重新出桌面安装包，
+# 否则 artifact 会一直停在旧版本。
 
 on:
   push:
     branches: [main]
     paths:
       - 'desktop/**'
+      - 'src/**'
+      - 'public/**'
+      - 'audio-core/**'
+      - 'index.html'
+      - 'vite.config.js'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
@@ -39,6 +47,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # v16：cargo 缓存——tauri-cli 安装 + 依赖首次编译很重，
+      # 不缓存每个 job 多花 10+ 分钟
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            desktop/src-tauri/target
+          key: ${{ runner.os }}-tauri-${{ hashFiles('desktop/src-tauri/Cargo.toml', 'audio-core/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-tauri-
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-latest'

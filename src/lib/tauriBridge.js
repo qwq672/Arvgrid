@@ -30,18 +30,31 @@ export const isTauriDesktop = _isTauri;
 // 动态加载 @tauri-apps/plugin-fs 的几个方法
 // 用变量名让 Vite 跳过静态解析（网页端 build 不需要这个依赖）
 async function importTauriFs() {
+  // v16 修复：tempDir 并非 plugin-fs 的导出（Tauri v2 的路径 API 在
+  // @tauri-apps/api/path）。旧代码从 plugin-fs 解构 tempDir 得到 undefined，
+  // await tempDir() 抛 TypeError → SF2 加载整链失败 → 桌面端永远静音。
+  let tempDir = null;
+  try {
+    const pathModName = '@tauri-apps/api/path';
+    const pathMod = await import(/* @vite-ignore */ pathModName);
+    tempDir = pathMod.tempDir || null;
+  } catch (e) { /* api/path 不可用则保持 null，调用方降级 */ }
   try {
     const modName = '@tauri-apps/plugin-fs';
     const mod = await import(/* @vite-ignore */ modName);
     return {
       writeFile: mod.writeFile,
       remove: mod.remove,
-      tempDir: mod.tempDir,
+      tempDir,
     };
   } catch (e) {
-    return { writeFile: null, remove: null, tempDir: null };
+    return { writeFile: null, remove: null, tempDir };
   }
 }
+
+// v16：上次加载成功的临时 SF2 路径——下次加载时清理（此时旧 AudioCore
+// 已被替换、mmap 已关闭，删除安全；2GB SF2 反复换音源不再堆积磁盘）
+let _lastSf2TempPath = null;
 
 /**
  * 桌面端原生音频引擎
@@ -59,7 +72,7 @@ export const tauriAudio = {
       if (onProgress) onProgress({ stage: 'writing-tempfile', percent: 30 });
 
       const { writeFile, remove, tempDir } = await importTauriFs();
-      if (!writeFile) {
+      if (!writeFile || !tempDir) {
         // plugin-fs 不可用，fallback 到老路径（仅适合小 SF2）
         console.warn('[tauri-bridge] plugin-fs not available, falling back to byte transfer (slow for >100MB)');
         const bytes = new Uint8Array(arrayBuffer);
@@ -70,11 +83,18 @@ export const tauriAudio = {
 
       const dir = await tempDir();
       const tmpPath = `${dir}/arvgrid_sf2_${Date.now()}.sf2`;
+
+      // v16：清理上一次的临时文件（旧 mmap 已随 AudioCore 替换而关闭）
+      if (_lastSf2TempPath && _lastSf2TempPath !== tmpPath && remove) {
+        try { await remove(_lastSf2TempPath); } catch (e) { /* Windows 下句柄未释放等情况忽略 */ }
+      }
+
       await writeFile(tmpPath, new Uint8Array(arrayBuffer));
       if (onProgress) onProgress({ stage: 'mmap-loading', percent: 60 });
 
       const result = await invoke('load_sf2_path', { path: tmpPath });
       console.log('[tauri-bridge] SF2 loaded (path):', result);
+      _lastSf2TempPath = tmpPath; // 记录，供下次清理
       if (onProgress) onProgress({ stage: 'done', percent: 100 });
       return true;
     } catch (e) {
