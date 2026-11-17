@@ -4,10 +4,19 @@ name: Desktop
 # v16：触发路径扩展到 src/public/audio-core——桌面壳打包的是 dist/，
 # 前端修复（如 v14 设置黑屏 / v15 PianoRoll）同样需要重新出桌面安装包，
 # 否则 artifact 会一直停在旧版本。
+#
+# v261117-1 起：tag 推送（v*）自动出 GitHub Release。
+#   发版约定（与用户商定）：
+#   - 日期版 tag  vYYMMDD-N（如 v261117-1）→ Pre-release，每轮改动例行发；
+#   - 语义版 tag  vX.Y.Z（如 v1.0.0）→ 正式 release，仅在用户验证并
+#     明确说“大部分功能已完善”之后才使用（平时绝不发正式版）。
+# release job 在三平台构建完成后下载全部安装包，一次性挂到 release 上，
+# 避免 243MB+ 的安装包走任何本地下载/上传链路（CI→CI 直传）。
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - 'desktop/**'
       - 'src/**'
@@ -120,3 +129,67 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
           retention-days: 30
+
+  # ----------------------------------------------------------------
+  # 发版 job：仅 tag 推送时运行。等三平台构建全部完成后，下载全部
+  # 安装包并创建 GitHub Release（日期版 tag → Pre-release）。
+  # ----------------------------------------------------------------
+  release:
+    name: Release (${{ github.ref_name }})
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: arvgrid-desktop-*
+          path: bundles
+          merge-multiple: true
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # 发版约定：日期版 → Pre-release；语义版 → 正式 release
+          PRERELEASE=false
+          if [[ "$TAG" =~ ^v[0-9]{6}(-[0-9]+)?$ ]]; then
+            PRERELEASE=true
+            echo "日期版 tag → 标记为 Pre-release"
+          else
+            echo "语义版 tag → 正式 release"
+          fi
+
+          # 用 annotated tag 的正文作为 release 说明
+          git fetch --tags --force
+          git tag -l --format='%(contents:body)' "$TAG" > tag-notes.md || true
+          if [ ! -s tag-notes.md ]; then
+            echo "Arvgrid $TAG 桌面端安装包（Windows / macOS ARM / Linux，内置 FluidR3_GM 音色库）。" > tag-notes.md
+          fi
+
+          # 收集全部安装包（.app 是目录，跳过；.dmg 才是可分发格式）
+          mapfile -t FILES < <(find bundles -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.deb' \
+               -o -name '*.AppImage' -o -name '*.dmg' \) | sort)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::bundles/ 下没有找到任何安装包文件"
+            exit 1
+          fi
+          echo "将上传 ${#FILES[@]} 个文件："
+          printf '  %s\n' "${FILES[@]}"
+
+          ARGS=(--title "Arvgrid $TAG" --notes-file tag-notes.md)
+          if [ "$PRERELEASE" = true ]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "$TAG" "${FILES[@]}" "${ARGS[@]}"
