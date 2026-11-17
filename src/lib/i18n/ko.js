@@ -31,6 +31,10 @@ export default {
   confirmClear: '모든 캐시가 영구 삭제됩니다. 계속하시겠습니까?',
   cacheCleared: '캐시를 지웠습니다', settingsReset: '설정을 초기화했습니다',
   importFailed: 'MIDI 가져오기 실패: ', language: '언어',
+  // v261117-2 自绘弹窗文案
+  dialogNewTitle: '새 프로젝트', dialogBackTitle: '홈으로', dialogClearTitle: '캐시 지우기',
+  dialogImportTitle: 'MIDI 가져오기', dialogImportFailedTitle: '가져오기 실패', dialogExportFailedTitle: '내보내기 실패',
+  buttonOK: '확인', buttonCancel: '취소', buttonSaveImport: '저장하고 가져오기', buttonImportOnly: '바로 가져오기',
   bufferSize: '재생 버퍼',
   bufferDesc: '버퍼가 작을수록 지연이 낮아지지만 CPU 부하가 높아집니다',
   bufShort: '짧음 (저지연)',

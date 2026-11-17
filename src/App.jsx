@@ -8,6 +8,7 @@ import Sf2LoadingDialog from './components/Sf2LoadingDialog';
 import { parseMidiFile, generateMidiFile } from './lib/midi';
 import { exportAudio } from './lib/audioExport';
 import { useTranslation } from './lib/i18n';
+import { useDialog } from './components/DialogSystem';
 
 export default function App() {
   const [showHome, setShowHome] = useState(true);
@@ -44,6 +45,7 @@ export default function App() {
   const project = useProject();
   const audioEngine = useAudioEngine();
   const t = useTranslation(lang);
+  const dlg = useDialog(); // v261117-2：自绘弹窗（替代全部原生 alert/confirm）
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -129,8 +131,9 @@ export default function App() {
     project.newProject();
   };
 
-  const handleNewProject = () => {
-    if (hasUnsavedChanges && !confirm(t.confirmNew)) return;
+  // v261117-2：原生 confirm → 自绘（async 化）；ESC/遮罩取消返回 false
+  const handleNewProject = async () => {
+    if (hasUnsavedChanges && !(await dlg.confirm({ title: t.dialogNewTitle, message: t.confirmNew }))) return;
     audioEngine.stopPlayback();
     setHasUnsavedChanges(false);
     setShowHome(false);
@@ -142,11 +145,20 @@ export default function App() {
       // 如果当前工程有轨道内容，先确认
       const hasContent = project.tracks.some(t => t.notes && t.notes.length > 0);
       if (hasContent) {
-        if (!confirm(lang === 'zh' ? 'MIDI将被导入到新工程\n是否保存当前工程？' : 'MIDI will be imported into a new project.\nSave current project?')) {
-          // 不保存，直接继续
-        } else {
-          project.exportProject();
-        }
+        // v261117-2：三按钮自绘弹窗取代原生二按钮 confirm。
+        // 原生版语义陷阱：OK=保存后导入，取消=不保存但仍然导入——没有真正的
+        // “反悔”入口。现在：保存并导入 / 直接导入 / 取消（含 ESC/遮罩）。
+        const choice = await dlg.confirm({
+          title: t.dialogImportTitle,
+          message: lang === 'zh' ? 'MIDI 将被导入到新工程\n是否保存当前工程？' : 'MIDI will be imported into a new project.\nSave current project?',
+          buttons: [
+            { label: t.buttonSaveImport, value: 'save', primary: true },
+            { label: t.buttonImportOnly, value: 'skip' },
+            { label: t.buttonCancel, value: 'cancel' },
+          ],
+        });
+        if (choice !== 'save' && choice !== 'skip') return; // cancel / null(ESC)
+        if (choice === 'save') project.exportProject();
         setHasUnsavedChanges(false);
       }
       const arrayBuffer = await file.arrayBuffer();
@@ -162,7 +174,7 @@ export default function App() {
       setHasUnsavedChanges(false);
       setShowHome(false);
     } catch (err) {
-      alert(t.importFailed + err.message);
+      await dlg.alert({ title: t.dialogImportFailedTitle, message: err.message });
     }
   };
 
@@ -178,7 +190,7 @@ export default function App() {
         project.mergeMidiData(midiData);
         setHasUnsavedChanges(true);
       } catch (err) {
-        alert(t.importFailed + err.message);
+        await dlg.alert({ title: t.dialogImportFailedTitle, message: err.message });
       }
     };
     input.click();
@@ -239,7 +251,7 @@ export default function App() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert((lang === 'zh' ? '导出失败: ' : 'Export failed: ') + err.message);
+      await dlg.alert({ title: t.dialogExportFailedTitle, message: err.message });
     }
     onComplete();
   };
@@ -268,13 +280,14 @@ export default function App() {
     else document.exitFullscreen();
   };
 
-  const handleClearCache = () => {
-    if (confirm(t.confirmClear)) {
-      localStorage.removeItem('arvgrid_autosave');
-      localStorage.removeItem('arvgrid_recent_projects');
-      setRecentProjects([]);
-      alert(t.cacheCleared);
-    }
+  // v261117-2：确认走自绘弹窗（危险色主按钮）；结果提示走 Toast（不再阻塞）
+  const handleClearCache = async () => {
+    const ok = await dlg.confirm({ title: t.dialogClearTitle, message: t.confirmClear, danger: true });
+    if (!ok) return;
+    localStorage.removeItem('arvgrid_autosave');
+    localStorage.removeItem('arvgrid_recent_projects');
+    setRecentProjects([]);
+    dlg.toast(t.cacheCleared, { type: 'success' });
   };
 
   const handleResetSettings = () => {
@@ -287,7 +300,7 @@ export default function App() {
     setUiScale(100);
     setLang('zh');
     audioEngine.setSoundSource('default');
-    alert(t.settingsReset);
+    dlg.toast(t.settingsReset, { type: 'success' });
   };
 
   const handleLangChange = (newLang) => {
@@ -377,8 +390,8 @@ export default function App() {
         audioEngine={audioEngine}
         autoSaveMode={autoSaveMode}
         setAutoSaveMode={setAutoSaveMode}
-        onExitToHome={() => {
-          if (hasUnsavedChanges && !confirm(t.confirmBack)) return;
+        onExitToHome={async () => {
+          if (hasUnsavedChanges && !(await dlg.confirm({ title: t.dialogBackTitle, message: t.confirmBack }))) return;
           setShowHome(true);
         }}
         onOpenSettings={() => setSettingsOpen(true)}

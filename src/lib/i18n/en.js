@@ -31,6 +31,10 @@ export default {
   confirmClear: 'All cached projects will be permanently deleted. Continue?',
   cacheCleared: 'Cache cleared', settingsReset: 'Settings reset',
   importFailed: 'Import MIDI failed: ', language: 'Language',
+  // v261117-2 自绘弹窗文案
+  dialogNewTitle: 'New Project', dialogBackTitle: 'Back to Home', dialogClearTitle: 'Clear Cache',
+  dialogImportTitle: 'Import MIDI', dialogImportFailedTitle: 'Import Failed', dialogExportFailedTitle: 'Export Failed',
+  buttonOK: 'OK', buttonCancel: 'Cancel', buttonSaveImport: 'Save & Import', buttonImportOnly: 'Import Directly',
   bufferSize: 'Buffer Size',
   bufferDesc: 'Smaller buffer = lower latency, higher CPU',
   bufShort: 'Short (Low Latency)',

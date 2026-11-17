@@ -31,6 +31,10 @@ export default {
   confirmClear: '全キャッシュが完全に削除されます。続行しますか？',
   cacheCleared: 'キャッシュをクリアしました', settingsReset: '設定をリセットしました',
   importFailed: 'MIDI インポート失敗: ', language: '言語',
+  // v261117-2 自绘弹窗文案
+  dialogNewTitle: '新規プロジェクト', dialogBackTitle: 'ホームに戻る', dialogClearTitle: 'キャッシュを消去',
+  dialogImportTitle: 'MIDI を読み込む', dialogImportFailedTitle: '読み込み失敗', dialogExportFailedTitle: '書き出し失敗',
+  buttonOK: 'OK', buttonCancel: 'キャンセル', buttonSaveImport: '保存して読み込む', buttonImportOnly: '直接読み込む',
   bufferSize: '再生バッファ',
   bufferDesc: 'バッファが小さいほど遅延が低くなりますが CPU 負荷が高くなります',
   bufShort: '短い (低遅延)',

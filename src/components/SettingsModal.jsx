@@ -4,6 +4,7 @@ import { useTranslation } from '../lib/i18n';
 import { isWasmSupported } from '../lib/wasmBackend';
 import AutomationPanel from './AutomationPanel';
 import { isTauriDesktop } from '../lib/tauriBridge';
+import { useDialog } from './DialogSystem';
 
 export default function SettingsPanel({
   open, onClose,
@@ -102,6 +103,9 @@ export default function SettingsPanel({
   });
   const wasmSupported = isWasmSupported();
   const t = useTranslation(lang);
+  // v261117-2：自绘弹窗/Toast。⚠ 必须在 if (!open) return null 之前调用
+  // （本组件常驻挂载，open=false 时提前返回——hook 顺序违规会直接 React #310）
+  const dlg = useDialog();
 
   // ⚠️ 所有 hooks 必须在 `if (!open) return null` 之前无条件执行：
   // 本组件常驻挂载（open=false 时提前返回）。v12 曾把 setOutputSink 放在
@@ -122,10 +126,11 @@ export default function SettingsPanel({
     setWasmEnabled(enabled);
     localStorage.setItem('arvgrid_wasm_backend', enabled ? '1' : '0');
     if (enabled) {
-      // 提示用户需要重新加载 SF2 才能生效
-      alert(lang === 'zh'
+      // 提示用户需要重新加载 SF2 才能生效（v261117-2：原生 alert → Toast，不再阻塞）
+      dlg.toast(lang === 'zh'
         ? '已启用实验性 WASM 后端。下次加载 SF2 时将尝试使用 WASM 解析（如果 WASM 文件已部署）。加载失败会自动回退到 JS。'
-        : 'Experimental WASM backend enabled. Next SF2 load will try WASM parsing (if WASM file is deployed). Falls back to JS on failure.');
+        : 'Experimental WASM backend enabled. Next SF2 load will try WASM parsing (if WASM file is deployed). Falls back to JS on failure.',
+        { type: 'info', duration: 5000 });
     }
   };
 

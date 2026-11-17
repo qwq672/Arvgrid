@@ -31,6 +31,10 @@ export default {
   confirmClear: '清空所有本地缓存工程将无法恢复，确定吗？',
   cacheCleared: '缓存已清空', settingsReset: '设置已重置',
   importFailed: '导入 MIDI 失败: ', language: '语言',
+  // v261117-2 自绘弹窗文案
+  dialogNewTitle: '新建工程', dialogBackTitle: '返回主页', dialogClearTitle: '清空缓存',
+  dialogImportTitle: '导入 MIDI', dialogImportFailedTitle: '导入失败', dialogExportFailedTitle: '导出失败',
+  buttonOK: '确定', buttonCancel: '取消', buttonSaveImport: '保存并导入', buttonImportOnly: '直接导入',
   bufferSize: '播放缓冲区',
   bufferDesc: '缓冲区越小延迟越低但性能要求越高',
   bufShort: '短 (低延迟)',

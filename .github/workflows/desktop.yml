@@ -82,6 +82,7 @@ jobs:
           node-version: 20
 
       - name: Install Tauri CLI
+        shell: bash   # Windows 默认 PowerShell：command -v / || 均为 bash 语法，缺这行必炸
         run: |
           # v261117-1 修复：cargo 缓存（v16 引入）会连带缓存 ~/.cargo/bin 里
           # 的 tauri-cli 二进制；tauri-cli 一发新版，`cargo install ^2.0` 解析
