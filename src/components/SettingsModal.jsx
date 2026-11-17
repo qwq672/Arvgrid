@@ -5,6 +5,7 @@ import { isWasmSupported } from '../lib/wasmBackend';
 import AutomationPanel from './AutomationPanel';
 import { isTauriDesktop } from '../lib/tauriBridge';
 import { useDialog } from './DialogSystem';
+import { getWasmEngineStats } from '../hooks/useAudioEngine';
 
 export default function SettingsPanel({
   open, onClose,
@@ -103,6 +104,11 @@ export default function SettingsPanel({
   });
   const wasmSupported = isWasmSupported();
   const t = useTranslation(lang);
+  // v261117-2：WASM 引擎统计（成功率测量）——面板打开或引擎状态变化时刷新
+  const [wasmStats, setWasmStats] = useState(null);
+  useEffect(() => {
+    if (open) setWasmStats(getWasmEngineStats());
+  }, [open, engineStatus]);
   // v261117-2：自绘弹窗/Toast。⚠ 必须在 if (!open) return null 之前调用
   // （本组件常驻挂载，open=false 时提前返回——hook 顺序违规会直接 React #310）
   const dlg = useDialog();
@@ -264,6 +270,14 @@ export default function SettingsPanel({
                             ? (lang === 'zh' ? '当前：JS 引擎' + (fallbackReason ? '（回退原因：' + fallbackReason + '，详见控制台）' : '') : 'Current: JS engine' + (fallbackReason ? ' (fallback: ' + fallbackReason + ')' : ''))
                             : (lang === 'zh' ? '初始化中…' : 'Initializing…')}
                       </span>
+                    </div>
+                  )}
+                  {/* v261117-2：引擎统计——成功率可见化（JS 回退概率目标的证据链） */}
+                  {engineStatus && wasmStats && (wasmStats.ok > 0 || wasmStats.fallback > 0) && (
+                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 3 }}>
+                      {lang === 'zh'
+                        ? `本机统计：WASM 就绪 ${wasmStats.ok || 0} 次 / 回退 JS ${wasmStats.fallback || 0} 次` + (wasmStats.lastReason ? `（最近回退：${String(wasmStats.lastReason).slice(0, 80)}）` : '')
+                        : `Local stats: WASM ok ${wasmStats.ok || 0} / JS fallback ${wasmStats.fallback || 0}` + (wasmStats.lastReason ? ` (last: ${String(wasmStats.lastReason).slice(0, 80)})` : '')}
                     </div>
                   )}
                   <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>

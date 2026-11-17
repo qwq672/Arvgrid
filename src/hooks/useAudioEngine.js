@@ -121,25 +121,67 @@ function awaitWasmReady(ctx, node, { runningBudgetMs = 15000, wallBudgetMs = 120
   });
 }
 
+// ============ v261117-2：wasm-ok 熔断记忆 + 成功率测量 ============
+// 目标“JS 回退概率 ≤ 1/100000”需要证据链而不是感觉：每次引擎初始化的
+// 结局都落入 localStorage——
+//   ok       → WASM 引擎就绪（顺带记 lastOkAt：这个部署/浏览器历史上
+//              确实能出 WASM，下次遇网络抖动给更长耐心）
+//   fallback → 彻底回退 JS（记原因首段，可在设置面板看到）
+// 统计供设置面板展示（成功率可算）+ fetchWasmBytes 自适应超时参考。
+const WASM_STATS_KEY = 'arvgrid_wasm_stats';
+
+export function getWasmEngineStats() {
+  try {
+    return JSON.parse(localStorage.getItem(WASM_STATS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function recordWasmOutcome(kind, reason) {
+  try {
+    const s = getWasmEngineStats();
+    if (kind === 'ok') {
+      s.ok = Math.min((s.ok || 0) + 1, 99999);
+      s.lastOkAt = Date.now();
+    } else if (kind === 'fallback') {
+      s.fallback = Math.min((s.fallback || 0) + 1, 99999);
+      if (reason) s.lastReason = String(reason).slice(0, 200);
+    }
+    localStorage.setItem(WASM_STATS_KEY, JSON.stringify(s));
+  } catch { /* 隐私模式等 localStorage 不可用——统计非关键路径 */ }
+}
+
 // WASM 字节获取：2 路径 × 每路径 3 次重试（退避 400ms/800ms）。
 // 网络抖动 / CDN 瞬断不再直接判死回退 JS。
+// v261117-2：每 attempt 挂 AbortController 阶梯超时（拦“挂死连接”不误伤
+// 慢网）——曾经成功过的部署（wasm-ok 记忆存在）给双倍耐心：
+// 有记忆 20/40/60s，首次访问 10/20/30s。97KB 正常亚秒完成。
 async function fetchWasmBytes() {
   const paths = [
     'wasm/audio_core_bg.wasm',
     new URL('wasm/audio_core_bg.wasm', location.href).href,
   ];
+  const hadOk = !!getWasmEngineStats().lastOkAt;
+  const baseTimeout = hadOk ? 20000 : 10000;
   let lastError = null;
   for (const path of paths) {
     for (let attempt = 1; attempt <= 3; attempt++) {
+      const timeoutMs = baseTimeout * attempt;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const resp = await fetch(path, { redirect: 'follow' });
+        const resp = await fetch(path, { redirect: 'follow', signal: ctrl.signal });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const bytes = await resp.arrayBuffer();
-        console.log(`[arvgrid WASM] fetch 成功: ${path}（${bytes.byteLength} bytes，第 ${attempt} 次尝试）`);
+        clearTimeout(timer);
+        console.log(`[arvgrid WASM] fetch 成功: ${path}（${bytes.byteLength} bytes，第 ${attempt} 次尝试，超时预算 ${timeoutMs / 1000}s${hadOk ? '（有 wasm-ok 记忆）' : ''}）`);
         return bytes;
       } catch (err) {
-        lastError = err;
-        console.warn(`[arvgrid WASM] fetch 失败 (${path}, 尝试 ${attempt}/3):`, err.message);
+        clearTimeout(timer);
+        const isAbort = err?.name === 'AbortError';
+        lastError = isAbort ? new Error(`网络超时（> ${Math.round(timeoutMs / 1000)}s）`) : err;
+        console.warn(`[arvgrid WASM] fetch 失败 (${path}, 尝试 ${attempt}/3):`, lastError.message);
         if (attempt < 3) await new Promise((r) => setTimeout(r, 400 * attempt));
       }
     }
@@ -660,6 +702,7 @@ export function useAudioEngine() {
 
         console.log('[arvgrid WASM] WASM backend fully initialized');
         setEngineStatus('wasm');
+        recordWasmOutcome('ok');
       } catch (err) {
         // v13：先 node 级重试一次（重建 AudioWorkletNode 复用已下载的
         // wasm 字节），仍失败才真正回退 JS——大幅缩小"回退 JS"的触发面
@@ -680,10 +723,12 @@ export function useAudioEngine() {
           await sendInitAndWait(ctx, retryNode, wasmBytesRef.current, polyphony);
           console.log('[arvgrid WASM] node 重建重试成功——仍为 WASM 引擎');
           setEngineStatus('wasm');
+          recordWasmOutcome('ok');
         } catch (err2) {
           fallbackReasonRef.current = `${err?.message || err} | retry: ${err2?.message || err2}`;
           console.warn('[arvgrid WASM] 重试仍失败，回退 JS worklet。原因:', fallbackReasonRef.current);
           setEngineStatus('js');
+          recordWasmOutcome('fallback', fallbackReasonRef.current);
           await loadJsWorkletImpl(ctx, noteBus);
         }
       }
