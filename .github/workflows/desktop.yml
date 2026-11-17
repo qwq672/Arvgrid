@@ -82,7 +82,14 @@ jobs:
           node-version: 20
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0"
+        run: |
+          # v261117-1 修复：cargo 缓存（v16 引入）会连带缓存 ~/.cargo/bin 里
+          # 的 tauri-cli 二进制；tauri-cli 一发新版，`cargo install ^2.0` 解析
+          # 到新版本、遇缓存里的旧版二进制 → exit 101 "already exists in
+          # destination"，三平台同时挂（首版 tag 构建即撞上）。
+          # 装过即跳过：缓存命中零编译更快；缓存未命中（key 变化/新 runner）
+          # 才装最新 2.x。
+          command -v cargo-tauri >/dev/null 2>&1 || cargo install tauri-cli --version "^2.0"
 
       - name: Download built-in SF2 (FluidR3_GM)
         shell: bash
