@@ -84,6 +84,7 @@ jobs:
       - name: Build frontend
         run: |
           npm install
+          npx eslint src
           npm run build
 
       - name: Build Tauri app

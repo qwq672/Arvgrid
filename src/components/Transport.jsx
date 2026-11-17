@@ -52,7 +52,9 @@ export default function Transport({
   const [showFx, setShowFx] = useState(false);
   const t = useTranslation(lang);
 
-  // 使用 requestAnimationFrame 更新显示时间（节流到 ~30fps 减少低端设备竖屏卡顿）
+  // v17：解锁帧率——RAF 原生跟随显示器刷新率（60/120/144Hz），去掉 ~30fps
+  // 人为节流。每帧只做 3 个 textContent/style 直写（无 React 重渲染），成本
+  // 亚毫秒；低端设备 RAF 自然丢帧，无需人为上限。
   useEffect(() => {
     if (!isPlaying || isPaused) {
       displayTimeRef.current = currentTime || 0;
@@ -70,13 +72,7 @@ export default function Transport({
       return;
     }
 
-    let lastUpdate = 0;
-    const updateDisplay = (ts) => {
-      if (ts - lastUpdate < 33) {  // ~30fps
-        rafRef.current = requestAnimationFrame(updateDisplay);
-        return;
-      }
-      lastUpdate = ts;
+    const updateDisplay = () => {
       if (getPlaybackTime) {
         displayTimeRef.current = getPlaybackTime();
       }

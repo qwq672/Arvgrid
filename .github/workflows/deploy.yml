@@ -39,6 +39,8 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      # v17：react-hooks 规则守门（v14/v15 两颗黑屏雷都是此规则可拦截的违规）
+      - run: npx eslint src
       - run: npm run build
 
       - uses: actions/upload-pages-artifact@v3

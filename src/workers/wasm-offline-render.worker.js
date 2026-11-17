@@ -32,7 +32,6 @@ async function loadAudioCore() {
   let lastErr = null;
   for (const url of candidates) {
     try {
-      // eslint-disable-next-line no-new-func
       const mod = await import(/* @vite-ignore */ url);
       if (mod && typeof mod.default === 'function') return mod;
       lastErr = new Error('module loaded but default export missing: ' + url);

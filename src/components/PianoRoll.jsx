@@ -535,6 +535,49 @@ function PianoRollInner({ track, trackColor = '#888', ghostTracks = [], tracks =
     }
   }, [draw]);
 
+  // v17：锚定缩放——缩放前后视口中心对应的乐谱位置保持不动。
+  // 供 ±按钮 / Ctrl+滚轮 共用；缩放后内容宽度未同步，用 rAF 等一帧再设 scrollLeft。
+  // （必须定义在 requestRedraw 之后：useCallback 依赖数组在声明时求值，
+  //  放在前面会触发 TDZ ReferenceError —— 首次集成时踩过，ErrorBoundary 兜底验证有效）
+  const zoomAroundCenter = useCallback((factor) => {
+    const sc = scrollRef.current;
+    const zx = zoomXRef.current;
+    const nzx = Math.min(300, Math.max(20, zx * factor));
+    if (sc) {
+      const aSec = (sc.scrollLeft + sc.clientWidth / 2) / zx;
+      requestAnimationFrame(() => {
+        const target = aSec * nzx - sc.clientWidth / 2;
+        const maxSL = Math.max(0, sc.scrollWidth - sc.clientWidth);
+        sc.scrollLeft = Math.max(0, Math.min(maxSL, target));
+        requestRedraw();
+      });
+    }
+    setZoomX(nzx);
+  }, [requestRedraw]);
+
+  // v17：Ctrl + 滚轮缩放（桌面）——锚定鼠标指向的乐谱位置；
+  // 普通滚轮保持原生滚动不受影响。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const zx = zoomXRef.current;
+      const rect = el.getBoundingClientRect();
+      const aSec = (el.scrollLeft + e.clientX - rect.left) / zx;
+      const nzx = Math.min(300, Math.max(20, zx * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      setZoomX(nzx);
+      requestAnimationFrame(() => {
+        const target = aSec * nzx - (e.clientX - rect.left);
+        const maxSL = Math.max(0, el.scrollWidth - el.clientWidth);
+        el.scrollLeft = Math.max(0, Math.min(maxSL, target));
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
   // 初始绘制和依赖变化时触发 - 使用 requestRedraw 批量处理
   // 优化：只在关键数据变化时重绘，减少无谓 RAF
   const trackNotes = track?.notes;
@@ -581,11 +624,20 @@ function PianoRollInner({ track, trackColor = '#888', ghostTracks = [], tracks =
   useEffect(() => {
     if (!isPlaying) { if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } drawPlayhead(0); return; }
     let lastTime = 0;
+    // v17 自适应降级：连续 24 帧间隔 > 24ms（低端设备渲染吃力或低刷屏）
+    // → 隔帧渲染（约一半刷新率）；恢复流畅后（间隔 ≤ 16ms）streak 递减回零、
+    // 自动回满帧。高刷屏（120/144Hz）不再被人为锁 20fps。
+    let slowStreak = 0;
+    let frameNo = 0;
     const animate = (ts) => {
-      // v6: 节流到 ~20fps（50ms），减少移动设备 canvas 重绘开销
-      if (ts - lastTime < 50) { rafRef.current = requestAnimationFrame(animate); return; }
+      const dt = ts - lastTime;
+      if (lastTime > 0 && dt > 0 && dt < 200) {
+        if (dt > 24) slowStreak++;
+        else if (dt <= 16) slowStreak = Math.max(0, slowStreak - 1);
+      }
       lastTime = ts;
-      if (getPlaybackTime) {
+      const skip = slowStreak >= 24 && ((frameNo++ & 1) === 1);
+      if (!skip && getPlaybackTime) {
         const tNow = getPlaybackTime();
         drawPlayhead(tNow);
         drawTimeline(tNow);
@@ -1085,6 +1137,8 @@ function PianoRollInner({ track, trackColor = '#888', ghostTracks = [], tracks =
   }, [handlePointerDown, handlePointerMove, handlePointerUp, handleContextMenu]);
 
   // 双指缩放（pinch zoom）- 在指针模式下生效
+  // v17：锚定捏合中心——缩放前后捏合中点对应的乐谱位置保持不动
+  // （旧版缩放绕原点，双指一张内容"跳走"，是移动端"杂乱"观感的主因之一）
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1094,7 +1148,20 @@ function PianoRollInner({ track, trackColor = '#888', ghostTracks = [], tracks =
       if (editModeRef.current !== 'pointer') return;
       const t1 = e.touches[0], t2 = e.touches[1];
       const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
-      pinchStateRef.current = { startDist: dist, startZoomX: zoomXRef.current, startZoomY: zoomYRef.current };
+      const sc = scrollRef.current;
+      // 捏合中点（视口内像素坐标）与其对应的乐谱位置（秒）
+      const scRect = sc ? sc.getBoundingClientRect() : canvas.getBoundingClientRect();
+      const midX = (t1.clientX + t2.clientX) / 2 - scRect.left;
+      const midY = (t1.clientY + t2.clientY) / 2 - scRect.top;
+      pinchStateRef.current = {
+        startDist: dist,
+        startZoomX: zoomXRef.current,
+        startZoomY: zoomYRef.current,
+        // 锚定量：中点对应的逻辑秒 + 初始 scrollTop/scrollLeft
+        midSec: sc ? (sc.scrollLeft + midX) / zoomXRef.current : 0,
+        startScrollTop: sc ? sc.scrollTop : 0,
+        midX, midY,
+      };
       e.preventDefault();
     };
 
@@ -1108,6 +1175,16 @@ function PianoRollInner({ track, trackColor = '#888', ghostTracks = [], tracks =
       const newZoomY = Math.min(40, Math.max(10, pinchStateRef.current.startZoomY * scale));
       setZoomX(newZoomX);
       setZoomY(newZoomY);
+      // 锚定：让 midSec 仍落在捏合中点的视口位置（不随缩放漂移）
+      const sc = scrollRef.current;
+      const p = pinchStateRef.current;
+      if (sc) {
+        const target = p.midSec * newZoomX - p.midX;
+        const maxSL = Math.max(0, sc.scrollWidth - sc.clientWidth);
+        sc.scrollLeft = Math.max(0, Math.min(maxSL, target));
+        // y 向近似锚定：保持视口顶行内容比例
+        sc.scrollTop = Math.max(0, p.startScrollTop * scale);
+      }
     };
 
     const handleTouchEndPinch = () => {
@@ -1193,9 +1270,10 @@ function PianoRollInner({ track, trackColor = '#888', ghostTracks = [], tracks =
     <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--bg)', borderRadius: 6, overflow: 'hidden', minHeight: 0 }}>
       {/* 工具栏：窄屏不 wrap（避免撑高挤压钢琴卷帘），改用横向滚动 */}
       <div style={{ padding: '3px 6px', display: 'flex', gap: 4, flexShrink: 0, flexWrap: 'nowrap', overflowX: 'auto', background: 'var(--panel)', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
-        <button onClick={() => setZoomX(z => Math.min(300, z * 1.2))} title={t.zoomIn} style={{ padding: '2px 6px' }}><Icons.ZoomIn /></button>
-        <button onClick={() => setZoomX(z => Math.max(20, z * 0.8))} title={t.zoomOut} style={{ padding: '2px 6px' }}><Icons.ZoomOut /></button>
-        <button onClick={() => { offsetXRef.current = 0; offsetYRef.current = 0; setZoomX(isNarrow ? 60 : 80); setZoomY(isNarrow ? 16 : 20); }} title={t.resetView} style={{ padding: '2px 6px' }}><Icons.Reset /></button>
+        {/* v17：缩放改为锚定视口中心（旧版缩完内容跳走）；触屏命中区增大 */}
+        <button onClick={() => zoomAroundCenter(1.2)} title={t.zoomIn} style={{ padding: '4px 10px', minWidth: 34, fontSize: '0.8rem' }}><Icons.ZoomIn /></button>
+        <button onClick={() => zoomAroundCenter(1 / 1.2)} title={t.zoomOut} style={{ padding: '4px 10px', minWidth: 34, fontSize: '0.8rem' }}><Icons.ZoomOut /></button>
+        <button onClick={() => { offsetXRef.current = 0; offsetYRef.current = 0; setZoomX(isNarrow ? 60 : 80); setZoomY(isNarrow ? 16 : 20); if (scrollRef.current) scrollRef.current.scrollTo(0, 0); }} title={t.resetView} style={{ padding: '4px 10px', minWidth: 34, fontSize: '0.8rem' }}><Icons.Reset /></button>
         <button
           onClick={() => setShowGhosts(s => !s)}
           className={showGhosts ? 'active' : ''}

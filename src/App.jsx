@@ -67,6 +67,13 @@ export default function App() {
     }
   }, [project.tracks, project.bpm, project.meta, project.currentTrackId]);
 
+  // v17 修复：把 mode 同步到 body.touch-mode——CSS 里整套触屏适配规则
+  // （button 44px 命中区、触摸滚动优化等）此前从未被挂载，全部是死代码，
+  // 触屏设备一直跑在桌面尺寸按钮上，是"移动端操作杂乱困难"的主因之一。
+  useEffect(() => {
+    document.body.classList.toggle('touch-mode', mode === 'touch');
+  }, [mode]);
+
   useEffect(() => {
     const handleBeforeUnload = (e) => {
       if (hasUnsavedChanges) {
